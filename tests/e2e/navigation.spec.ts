@@ -8,7 +8,7 @@ test.describe('Navigation', () => {
     expect(response).not.toBeNull();
     expect(response!.status()).toBe(200);
     await expect(page).toHaveTitle(/Mirror-GUI/);
-    await expect(page.getByText('Mirror-GUI Application')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('OpenShift Mirror Console')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('#page-sidebar')).toBeVisible({ timeout: 5000 });
     expect(jsErrors).toHaveLength(0);
   });
@@ -36,9 +36,10 @@ test.describe('Navigation', () => {
     await expect(page).toHaveURL(/\/(\?.*)?$/);
   });
 
-  test('masthead shows Mirror-GUI Application title', async ({ page }) => {
+  test('masthead shows the application title and subtitle', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByText('Mirror-GUI Application')).toBeVisible();
+    await expect(page.getByText('OpenShift Mirror Console')).toBeVisible();
+    await expect(page.getByText('Image Mirroring for Disconnected Clusters')).toBeVisible();
   });
 
   test('masthead shows current app version badge', async ({ page }) => {
