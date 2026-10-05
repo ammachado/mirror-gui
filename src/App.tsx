@@ -100,9 +100,9 @@ const AppLayout: React.FC = () => {
           <ToolbarContent>
             <ToolbarItem>
               <div>
-                <Title headingLevel="h1" size="2xl" style={{ lineHeight: 1.2, fontSize: '2rem' }}>Mirror-GUI Application</Title>
+                <Title headingLevel="h1" size="2xl" style={{ lineHeight: 1.2, fontSize: '2rem' }}>OpenShift Mirror Console</Title>
                 <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle)', fontSize: '1.25rem', lineHeight: 1.2 }}>
-                  OpenShift Container Platform Mirroring Operations
+                  Image Mirroring for Disconnected Clusters
                 </Content>
               </div>
             </ToolbarItem>
