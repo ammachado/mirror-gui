@@ -81,7 +81,7 @@ The resolved path is stored as `mirrorDestination` on the operation record for a
 
 ### Folder conflict guard
 
-Because M2D deletes prior archives in its folder, the server rejects a start (409) when another **running** operation uses the same folder. This applies to every mode pair, which also prevents two runs sharing one oc-mirror `working-dir`.
+Because M2D deletes prior archives in its folder, the server rejects a start (409) when another **running** operation uses the same folder and either the new or the running operation is M2M or D2M. This also prevents two registry-target runs sharing one oc-mirror `working-dir`. Two concurrent M2D runs on the same folder remain allowed, as before this feature (existing behavior and tests depend on it).
 
 ## Destination credentials
 
@@ -208,6 +208,8 @@ When `existingSecret` is set, the chart mounts the key read-only and sets `OC_MI
 No test pushes to a real registry. The argv unit tests cover the oc-mirror contract.
 
 ## Known limitations
+
+- **Token realm forwarding.** Registry verification sends Basic credentials to the token realm named in the registry's `WWW-Authenticate` header, even on another host. This matches podman and docker token auth; it only matters for a registry the user configured, and same-origin API access (no open CORS) prevents third-party pages from adding one.
 
 - **Private CAs.** oc-mirror only trusts the system certificate store, and the restricted, non-root container cannot update it at runtime. Destination registries with a private CA require "Skip TLS verification" until a CA bundle feature is designed.
 - **Folder reuse.** Running M2D into a folder later used as a D2M source is supported, but M2D replaces that folder's archives. The conflict guard only covers concurrent runs.
