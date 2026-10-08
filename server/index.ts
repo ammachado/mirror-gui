@@ -1,5 +1,4 @@
 import express, { Request, Response, NextFunction } from 'express';
-import cors from 'cors';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -275,7 +274,6 @@ const DIST_DIR = path.join(__dirname, '../dist');
 const DEV_INDEX_HTML = path.join(__dirname, '../index.html');
 
 app.use(compression());
-app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use((req: Request, res: Response, next: NextFunction) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);

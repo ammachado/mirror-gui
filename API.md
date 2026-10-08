@@ -987,7 +987,7 @@ Currently, there are no rate limits implemented on the API endpoints.
 
 ## CORS
 
-The API supports CORS and can be accessed from web browsers. All origins are allowed in development mode.
+The API does not send CORS headers, so browsers only allow the Mirror-GUI UI itself (same origin) to call it. Pages on other sites cannot read responses or send JSON write requests. Scripts and tools that are not browsers (curl, CI jobs) are unaffected. The API has no authentication; protect network access to it (see the Helm Route notes in the README).
 
 ## Health Check
 
