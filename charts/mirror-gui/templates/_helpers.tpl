@@ -3,7 +3,7 @@
 {{- end }}
 
 {{- define "mirror-gui.fullname" -}}
-{{- printf "%s-%s" .Release.Name (include "mirror-gui.name" .) | trunc 63 | trimSuffix "-" }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
