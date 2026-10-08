@@ -1,8 +1,8 @@
-1. **Start**: The server validates the config file and the mode-specific inputs, prepares the folder (creating it for mirror-to-disk and mirror-to-mirror; requiring existing `mirror_*.tar` archives for disk-to-mirror), claims the folder so no conflicting running operation can use it (a conflict needs a mirror-to-mirror or disk-to-mirror operation on either side), saves an `OperationRecord` JSON file, and spawns `oc-mirror --v2`. Mirror-to-disk writes to `file://<folder>`; mirror-to-mirror uses `--workspace file://<folder> docker://<destination>`; disk-to-mirror uses `--from file://<folder> docker://<destination>`. Registry-target modes run with a temporary `0600` authfile that merges the pull secret with the destination registry credentials.
+# Operation Lifecycle
 
 Mirror operations go through this lifecycle:
 
-1. **Start**: The server validates the config file exists, creates/validates the mirror destination directory (checking write permissions), saves an `OperationRecord` JSON file, and spawns `oc-mirror --v2` as a child process.
+1. **Start**: The server validates the config file and the mode-specific inputs, prepares the folder (creating it for mirror-to-disk and mirror-to-mirror; requiring existing `mirror_*.tar` archives for disk-to-mirror), claims the folder so no conflicting running operation can use it (a conflict needs a mirror-to-mirror or disk-to-mirror operation on either side), saves an `OperationRecord` JSON file, and spawns `oc-mirror --v2`. Mirror-to-disk writes to `file://<folder>`; mirror-to-mirror uses `--workspace file://<folder> docker://<destination>`; disk-to-mirror uses `--from file://<folder> docker://<destination>`. Registry-target modes run with a temporary `0600` authfile that merges the pull secret with the destination registry credentials.
 
 2. **Running**: stdout and stderr are piped to a log file. The server tracks the child process by operation ID. The frontend can connect to an SSE endpoint to stream logs in real time.
 
