@@ -47,6 +47,7 @@ import {
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { useAlerts } from '../AlertContext';
+import { OPERATION_MODE_LABELS, isRegistryTargetMode, type OperationMode } from '../../server/operationModes';
 
 interface Operation {
   id: string;
@@ -57,6 +58,8 @@ interface Operation {
   completedAt?: string;
   duration?: number;
   errorMessage?: string;
+  mode?: OperationMode;
+  destinationRegistry?: string;
 }
 
 interface OperationDetails {
@@ -68,6 +71,9 @@ interface OperationDetails {
   helmCharts?: number;
   configFile?: string;
   status?: string;
+  mode?: OperationMode;
+  destinationRegistry?: string;
+  clusterResourcesPath?: string;
 }
 
 const History: React.FC = () => {
@@ -384,6 +390,24 @@ const History: React.FC = () => {
                 </Button>
               </DescriptionListDescription>
             </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Mode</DescriptionListTerm>
+              <DescriptionListDescription>
+                {OPERATION_MODE_LABELS[selectedOperation.mode ?? 'mirrorToDisk']}
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+            {selectedOperation.destinationRegistry && (
+              <DescriptionListGroup>
+                <DescriptionListTerm>Destination Registry</DescriptionListTerm>
+                <DescriptionListDescription>{selectedOperation.destinationRegistry}</DescriptionListDescription>
+              </DescriptionListGroup>
+            )}
+            {isRegistryTargetMode(selectedOperation.mode ?? 'mirrorToDisk') && operationDetails?.clusterResourcesPath && (
+              <DescriptionListGroup>
+                <DescriptionListTerm>Cluster Resources</DescriptionListTerm>
+                <DescriptionListDescription>{operationDetails.clusterResourcesPath}</DescriptionListDescription>
+              </DescriptionListGroup>
+            )}
           </DescriptionList>
 
           {selectedOperation.errorMessage && selectedOperation.status !== 'stopped' && (
@@ -458,7 +482,7 @@ const History: React.FC = () => {
 
   const exportHistory = () => {
     const csvContent = [
-      ['Operation Name', 'Status', 'Started', 'Duration', 'Config File', 'Error Message'],
+      ['Operation Name', 'Status', 'Started', 'Duration', 'Config File', 'Error Message', 'Mode', 'Destination Registry'],
       ...filteredOperations.map(op => [
         op.name,
         op.status,
@@ -466,6 +490,8 @@ const History: React.FC = () => {
         formatDuration(op.duration),
         op.configFile,
         op.errorMessage || '',
+        OPERATION_MODE_LABELS[op.mode ?? 'mirrorToDisk'],
+        op.destinationRegistry || '',
       ]),
     ].map(row => row.map(field => `"${field}"`).join(',')).join('\n');
 
@@ -600,6 +626,7 @@ const History: React.FC = () => {
                   />
                   <Th>Operation</Th>
                   <Th>Config</Th>
+                  <Th>Mode</Th>
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
@@ -659,6 +686,9 @@ const History: React.FC = () => {
                             {op.configFile}
                           </Button>
                         </Td>
+                        <Td dataLabel="Mode">
+                          <Label isCompact>{OPERATION_MODE_LABELS[op.mode ?? 'mirrorToDisk']}</Label>
+                        </Td>
                         <Td dataLabel="Status">
                           {getStatusLabel(op.status)}
                         </Td>
@@ -671,7 +701,7 @@ const History: React.FC = () => {
                       </Tr>
                       {isSelected && (
                         <Tr>
-                          <Td colSpan={6}>
+                          <Td colSpan={7}>
                             {renderOperationDetails()}
                           </Td>
                         </Tr>
