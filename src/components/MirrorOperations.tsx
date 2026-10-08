@@ -44,6 +44,12 @@ import {
   ExpandableSectionToggle,
   Switch,
   NumberInput,
+  ToggleGroup,
+  ToggleGroupItem,
+  Checkbox,
+  FormHelperText,
+  HelperText,
+  HelperTextItem,
 } from '@patternfly/react-core';
 import {
   SyncAltIcon,
@@ -64,6 +70,15 @@ import {
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { useAlerts } from '../AlertContext';
+import { Link } from 'react-router-dom';
+import {
+  OPERATION_MODES,
+  OPERATION_MODE_LABELS,
+  getDestinationRegistryError,
+  getRegistryHost,
+  isRegistryTargetMode,
+  type OperationMode,
+} from '../../server/operationModes';
 
 interface ConfigFile {
   name: string;
@@ -80,6 +95,8 @@ interface Operation {
   duration?: number;
   mirrorDestination?: string;
   errorMessage?: string;
+  mode?: OperationMode;
+  destinationRegistry?: string;
 }
 
 interface OptionalFlags {
@@ -91,6 +108,8 @@ interface OptionalFlags {
   retryDelaySeconds: string;
   retryTimesEnabled: boolean;
   retryTimesValue: string;
+  maxNestedPathsEnabled: boolean;
+  maxNestedPathsValue: string;
 }
 
 interface OptionalFlagsPayload {
@@ -98,6 +117,7 @@ interface OptionalFlagsPayload {
   imageTimeout?: string;
   retryDelay?: string;
   retryTimes?: number;
+  maxNestedPaths?: number;
 }
 
 const DEFAULT_OPTIONAL_FLAGS: OptionalFlags = {
@@ -109,6 +129,23 @@ const DEFAULT_OPTIONAL_FLAGS: OptionalFlags = {
   retryDelaySeconds: '0',
   retryTimesEnabled: false,
   retryTimesValue: '5',
+  maxNestedPathsEnabled: false,
+  maxNestedPathsValue: '2',
+};
+
+const FOLDER_LABELS: Record<OperationMode, { text: string; help: string }> = {
+  mirrorToDisk: {
+    text: 'Mirror Destination Folder',
+    help: 'Mirror output is saved to data/mirrors/<folder>. Defaults to "default" if unchanged. Select an existing folder or create a new one from the dropdown.',
+  },
+  mirrorToMirror: {
+    text: 'Workspace Folder',
+    help: 'oc-mirror keeps its working files in data/mirrors/<folder>, including the generated cluster resources (IDMS, ITMS, CatalogSource) under working-dir/cluster-resources.',
+  },
+  diskToMirror: {
+    text: 'Archive Source Folder',
+    help: 'Folder under data/mirrors that contains the mirror_*.tar archives to push. Generated cluster resources are written to its working-dir/cluster-resources.',
+  },
 };
 
 const infoButtonStyle: CSSProperties = {
@@ -224,7 +261,7 @@ const getNonNegativeIntegerValidationMessage = (value: string, label: string): s
   return '';
 };
 
-const buildOptionalFlagsPayload = (flags: OptionalFlags): OptionalFlagsPayload | null => {
+const buildOptionalFlagsPayload = (flags: OptionalFlags, mode: OperationMode): OptionalFlagsPayload | null => {
   const payload: OptionalFlagsPayload = {};
 
   if (flags.removeSignatures) {
@@ -264,10 +301,18 @@ const buildOptionalFlagsPayload = (flags: OptionalFlags): OptionalFlagsPayload |
     payload.retryTimes = Number.parseInt(flags.retryTimesValue, 10);
   }
 
+  if (isRegistryTargetMode(mode) && flags.maxNestedPathsEnabled) {
+    const value = parseNonNegativeInt(flags.maxNestedPathsValue);
+    if (value === null || value < 1) {
+      return null;
+    }
+    payload.maxNestedPaths = value;
+  }
+
   return payload;
 };
 
-const getOptionalFlagsValidationError = (flags: OptionalFlags): string => {
+const getOptionalFlagsValidationError = (flags: OptionalFlags, mode: OperationMode): string => {
   if (flags.imageTimeoutEnabled) {
     const message = getDurationValidationMessage(
       flags.imageTimeoutMinutes,
@@ -289,6 +334,12 @@ const getOptionalFlagsValidationError = (flags: OptionalFlags): string => {
     const message = getNonNegativeIntegerValidationMessage(flags.retryTimesValue, 'Retry times');
     if (message) {
       return message;
+    }
+  }
+  if (isRegistryTargetMode(mode) && flags.maxNestedPathsEnabled) {
+    const value = parseNonNegativeInt(flags.maxNestedPathsValue);
+    if (value === null || value < 1) {
+      return 'Max nested paths must be a whole number of at least 1';
     }
   }
   return '';
@@ -332,6 +383,16 @@ const MirrorOperations: React.FC = () => {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [advancedOptionsExpanded, setAdvancedOptionsExpanded] = useState(false);
   const [optionalFlags, setOptionalFlags] = useState<OptionalFlags>(DEFAULT_OPTIONAL_FLAGS);
+  const [mode, setMode] = useState<OperationMode>('mirrorToDisk');
+  const [destinationRegistry, setDestinationRegistry] = useState('');
+  const [skipDestTlsVerify, setSkipDestTlsVerify] = useState(false);
+  const [credentialHosts, setCredentialHosts] = useState<Set<string> | null>(null);
+
+  const targetsRegistry = isRegistryTargetMode(mode);
+  const trimmedDestination = destinationRegistry.trim();
+  const destinationError = targetsRegistry ? getDestinationRegistryError(trimmedDestination) : null;
+  const destinationHost = trimmedDestination && !destinationError ? getRegistryHost(trimmedDestination) : null;
+  const missingCredentials = !!destinationHost && credentialHosts !== null && !credentialHosts.has(destinationHost);
 
   const operationsRef = useRef<Operation[]>([]);
   const notifiedOperationsRef = useRef(new Set<string>());
@@ -435,6 +496,24 @@ const MirrorOperations: React.FC = () => {
     } catch (error) {
       console.error('Error fetching mirror folders:', error);
       setAvailableFolders([]);
+    }
+  }, []);
+
+  // Hosts with credentials in either the pull secret or the destination credentials, used only
+  // to warn before start; oc-mirror still decides whether the push is allowed.
+  const fetchCredentialHosts = useCallback(async () => {
+    try {
+      const [pullSecretRes, credentialsRes] = await Promise.all([
+        axios.get('/api/registries'),
+        axios.get('/api/registry-credentials'),
+      ]);
+      const hosts = new Set<string>();
+      for (const r of pullSecretRes.data.registries || []) hosts.add(r.registry);
+      for (const c of credentialsRes.data.credentials || []) hosts.add(c.registry);
+      setCredentialHosts(hosts);
+    } catch (error) {
+      console.error('Error fetching registry credentials:', error);
+      setCredentialHosts(null);
     }
   }, []);
 
@@ -545,21 +624,37 @@ const MirrorOperations: React.FC = () => {
     return Math.floor((now - new Date(startedAt).getTime()) / 1000);
   };
 
+  const handleModeChange = (nextMode: OperationMode) => {
+    setMode(nextMode);
+    setFolderCreateMode(false);
+    if (nextMode === 'diskToMirror' && mirrorDestinationSubdir && !availableFolders.includes(mirrorDestinationSubdir)) {
+      setMirrorDestinationSubdir('');
+    }
+    if (isRegistryTargetMode(nextMode)) {
+      void fetchCredentialHosts();
+    }
+  };
+
   const startOperation = async () => {
     if (!selectedConfig) {
       addDangerAlert('Please select an ImageSetConfiguration file');
       return;
     }
 
-    const flagsValidationError = getOptionalFlagsValidationError(optionalFlags);
+    const flagsValidationError = getOptionalFlagsValidationError(optionalFlags, mode);
     if (flagsValidationError) {
       addDangerAlert(flagsValidationError);
       return;
     }
 
-    const optionalFlagsPayload = buildOptionalFlagsPayload(optionalFlags);
+    const optionalFlagsPayload = buildOptionalFlagsPayload(optionalFlags, mode);
     if (optionalFlagsPayload === null) {
       addDangerAlert('Invalid optional flags');
+      return;
+    }
+
+    if (destinationError) {
+      addDangerAlert(destinationError);
       return;
     }
 
@@ -567,7 +662,9 @@ const MirrorOperations: React.FC = () => {
       setLoading(true);
       const response = await axios.post('/api/operations/start', {
         configFile: selectedConfig,
+        mode,
         mirrorDestinationSubdir: mirrorDestinationSubdir.trim() || undefined,
+        ...(targetsRegistry ? { destinationRegistry: trimmedDestination, skipDestTlsVerify } : {}),
         ...(Object.keys(optionalFlagsPayload).length > 0
           ? { optionalFlags: optionalFlagsPayload }
           : {}),
@@ -820,6 +917,20 @@ const MirrorOperations: React.FC = () => {
           </CardTitle>
         </CardHeader>
         <CardBody>
+          <FormGroup label="Mode" fieldId="operation-mode" className="pf-v6-u-mb-md">
+            <ToggleGroup aria-label="Operation mode">
+              {OPERATION_MODES.map((option) => (
+                <ToggleGroupItem
+                  key={option}
+                  text={OPERATION_MODE_LABELS[option]}
+                  buttonId={`mode-${option}`}
+                  isSelected={mode === option}
+                  onChange={() => handleModeChange(option)}
+                />
+              ))}
+            </ToggleGroup>
+          </FormGroup>
+
           <FormGroup label="ImageSetConfiguration File" fieldId="config-select">
             <InputGroup>
               <InputGroupItem isFill>
@@ -875,9 +986,9 @@ const MirrorOperations: React.FC = () => {
               <FormGroup
                 label={
                   <FormGroupInfoLabel
-                    text="Mirror Destination Folder"
-                    ariaLabel="More info about mirror destination folder"
-                    bodyContent="Mirror output is saved to data/mirrors/<folder>. Defaults to &quot;default&quot; if unchanged. Select an existing folder or create a new one from the dropdown."
+                    text={FOLDER_LABELS[mode].text}
+                    ariaLabel={`More info about ${FOLDER_LABELS[mode].text.toLowerCase()}`}
+                    bodyContent={FOLDER_LABELS[mode].help}
                   />
                 }
                 fieldId="mirror-subdir"
@@ -947,17 +1058,19 @@ const MirrorOperations: React.FC = () => {
                       {availableFolders.map((folder) => (
                         <SelectOption key={folder} value={folder}>{folder}</SelectOption>
                       ))}
-                      {availableFolders.length > 0 && <Divider />}
-                      <SelectOption
-                        value="__create__"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setFolderCreateMode(true);
-                          setNewFolderName('');
-                        }}
-                      >
-                        <PlusCircleIcon className="pf-v6-u-mr-xs" /> Create new folder...
-                      </SelectOption>
+                      {mode !== 'diskToMirror' && availableFolders.length > 0 && <Divider />}
+                      {mode !== 'diskToMirror' && (
+                        <SelectOption
+                          value="__create__"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFolderCreateMode(true);
+                            setNewFolderName('');
+                          }}
+                        >
+                          <PlusCircleIcon className="pf-v6-u-mr-xs" /> Create new folder...
+                        </SelectOption>
+                      )}
                     </SelectList>
                   )}
                 </Select>
@@ -979,12 +1092,57 @@ const MirrorOperations: React.FC = () => {
                 variant="primary"
                 icon={loading ? <Spinner size="md" /> : <PlayIcon />}
                 onClick={startOperation}
-                isDisabled={!selectedConfig || loading}
+                isDisabled={!selectedConfig || loading || !!destinationError}
               >
                 Start Operation
               </Button>
             </FlexItem>
           </Flex>
+
+          {targetsRegistry && (
+            <>
+              <FormGroup label="Destination registry" isRequired fieldId="destination-registry" className="pf-v6-u-mt-md">
+                <TextInput
+                  id="destination-registry"
+                  aria-label="Destination registry"
+                  placeholder="registry.example.com:5000/mirror"
+                  value={destinationRegistry}
+                  onChange={(_e, value) => setDestinationRegistry(value)}
+                  validated={trimmedDestination && destinationError ? 'error' : 'default'}
+                />
+                <FormHelperText>
+                  <HelperText>
+                    <HelperTextItem variant={trimmedDestination && destinationError ? 'error' : 'default'}>
+                      {trimmedDestination && destinationError
+                        ? destinationError
+                        : 'Host, optional port, and optional namespace. Do not include docker://.'}
+                    </HelperTextItem>
+                  </HelperText>
+                </FormHelperText>
+              </FormGroup>
+              {missingCredentials && (
+                <Alert
+                  variant="warning"
+                  isInline
+                  className="pf-v6-u-mt-sm"
+                  title={`No credentials for ${destinationHost}`}
+                >
+                  Neither the pull secret nor the destination registry credentials have an entry for this
+                  host, so oc-mirror will push anonymously.{' '}
+                  <Link to="/settings?tab=registry">Add credentials in Settings</Link>.
+                </Alert>
+              )}
+              <FormGroup fieldId="skip-dest-tls" className="pf-v6-u-mt-md">
+                <Checkbox
+                  id="skip-dest-tls"
+                  label="Skip TLS verification for destination"
+                  description="Sends credentials without checking the registry certificate. Use only for registries with a self-signed or private CA certificate."
+                  isChecked={skipDestTlsVerify}
+                  onChange={(_e, checked) => setSkipDestTlsVerify(checked)}
+                />
+              </FormGroup>
+            </>
+          )}
 
           <ExpandableSection
             className="pf-v6-u-mt-md"
@@ -1241,6 +1399,58 @@ const MirrorOperations: React.FC = () => {
                 </div>
               )}
             </FormGroup>
+
+            {targetsRegistry && (
+              <FormGroup
+                label={
+                  <FormGroupInfoLabel
+                    text="Max nested paths"
+                    ariaLabel="More info about max nested paths"
+                    bodyContent="Limits how many path levels oc-mirror uses for repositories in the destination registry. Set it when the registry rejects deeply nested repository names."
+                  />
+                }
+                fieldId="flag-max-nested-paths"
+                className="pf-v6-u-mt-md"
+              >
+                <Switch
+                  id="flag-max-nested-paths"
+                  isChecked={optionalFlags.maxNestedPathsEnabled}
+                  onChange={(_e, checked) =>
+                    setOptionalFlags((prev) => ({ ...prev, maxNestedPathsEnabled: checked }))
+                  }
+                  aria-label="Enable max nested paths"
+                />
+                {optionalFlags.maxNestedPathsEnabled && (
+                  <div className="pf-v6-u-mt-sm">
+                    <NumberInput
+                      id="flag-max-nested-paths-value"
+                      value={optionalFlags.maxNestedPathsValue ? Number(optionalFlags.maxNestedPathsValue) : 1}
+                      min={1}
+                      onMinus={() =>
+                        setOptionalFlags((prev) => ({
+                          ...prev,
+                          maxNestedPathsValue: adjustDigitField(prev.maxNestedPathsValue, -1, 1),
+                        }))
+                      }
+                      onPlus={() =>
+                        setOptionalFlags((prev) => ({
+                          ...prev,
+                          maxNestedPathsValue: adjustDigitField(prev.maxNestedPathsValue, 1, 1),
+                        }))
+                      }
+                      onChange={(e: React.FormEvent<HTMLInputElement>) => {
+                        const val = (e.target as HTMLInputElement).value;
+                        setOptionalFlags((prev) => ({ ...prev, maxNestedPathsValue: sanitizeDigitsInput(val) }));
+                      }}
+                      widthChars={4}
+                      inputAriaLabel="Max nested paths"
+                      minusBtnAriaLabel="Decrease max nested paths"
+                      plusBtnAriaLabel="Increase max nested paths"
+                    />
+                  </div>
+                )}
+              </FormGroup>
+            )}
           </ExpandableSection>
         </CardBody>
       </Card>
@@ -1333,6 +1543,7 @@ const MirrorOperations: React.FC = () => {
                   />
                   <Th>Operation</Th>
                   <Th>Config</Th>
+                  <Th>Mode</Th>
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
@@ -1362,6 +1573,12 @@ const MirrorOperations: React.FC = () => {
                       >
                         {op.configFile}
                       </Button>
+                    </Td>
+                    <Td dataLabel="Mode">
+                      <span>{OPERATION_MODE_LABELS[op.mode ?? 'mirrorToDisk']}</span>
+                      {op.destinationRegistry && (
+                        <div className="pf-v6-u-font-size-sm pf-v6-u-mt-xs">{op.destinationRegistry}</div>
+                      )}
                     </Td>
                     <Td dataLabel="Status">
                       {getStatusLabel(op.status)}
@@ -1416,6 +1633,19 @@ const MirrorOperations: React.FC = () => {
                               }}
                             >
                               Copy Location
+                            </DropdownItem>
+                          )}
+                          {op.status === 'success' && op.mirrorDestination && isRegistryTargetMode(op.mode ?? 'mirrorToDisk') && (
+                            <DropdownItem
+                              key={`${op.id}-copy-cluster-resources`}
+                              icon={<CopyIcon />}
+                              onClick={() => {
+                                setKebabOpen((prev) => ({ ...prev, [op.id]: false }));
+                                // Same layout the server reports as clusterResourcesPath.
+                                void copyMirrorPath(`${op.mirrorDestination}/working-dir/cluster-resources`);
+                              }}
+                            >
+                              Copy Cluster Resources Path
                             </DropdownItem>
                           )}
                           <Divider key={`${op.id}-div`} component="li" />
