@@ -113,7 +113,7 @@ A missing file means "no credentials". A file that exists but is not valid JSON,
 
 For M2M and D2M, the server builds a temporary authfile before spawning:
 
-1. Read the pull secret `auths` (required; missing pull secret fails as it does today).
+1. Read the pull secret `auths`. A missing or empty pull secret contributes no entries (D2M does not need it, and today's start route does not require it either); a malformed one fails the start with 500.
 2. Read the destination credentials `auths`.
 3. Merge; on a host present in both, the destination credentials entry wins.
 4. Write to `RUN_DIR/authfile-<operationId>.json` with mode `0600`.
@@ -156,7 +156,7 @@ Records without `mode` are treated as `mirrorToDisk` everywhere they are read. `
 ### Mirror Operations page
 
 - A PatternFly `ToggleGroup` selects the mode: "Mirror to disk", "Mirror to mirror", "Disk to mirror". The default is "Mirror to disk".
-- The folder picker label changes with the mode: "Mirror destination", "Workspace", "Archive source". In D2M it lists existing folders only and does not offer creating one.
+- The folder picker label changes with the mode: "Mirror Destination Folder" (unchanged, existing E2E tests assert it), "Workspace Folder", "Archive Source Folder". In D2M it lists existing folders only and does not offer creating one.
 - For M2M and D2M:
   - "Destination registry" text input with inline validation matching the server rules.
   - "Skip TLS verification for destination" checkbox, unchecked by default, with helper text explaining the risk.
