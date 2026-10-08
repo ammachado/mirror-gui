@@ -1543,10 +1543,10 @@ const MirrorOperations: React.FC = () => {
                   />
                   <Th>Operation</Th>
                   <Th>Config</Th>
-                  <Th>Mode</Th>
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
+                  <Th>Mode</Th>
                   <Th screenReaderText="Actions" />
                 </Tr>
               </Thead>
@@ -1574,12 +1574,6 @@ const MirrorOperations: React.FC = () => {
                         {op.configFile}
                       </Button>
                     </Td>
-                    <Td dataLabel="Mode">
-                      <span>{OPERATION_MODE_LABELS[op.mode ?? 'mirrorToDisk']}</span>
-                      {op.destinationRegistry && (
-                        <div className="pf-v6-u-font-size-sm pf-v6-u-mt-xs">{op.destinationRegistry}</div>
-                      )}
-                    </Td>
                     <Td dataLabel="Status">
                       {getStatusLabel(op.status)}
                     </Td>
@@ -1590,6 +1584,12 @@ const MirrorOperations: React.FC = () => {
                       <OutlinedClockIcon /> {op.status === 'running'
                         ? formatDuration(getElapsedSeconds(op.startedAt))
                         : formatDuration(op.duration)}
+                    </Td>
+                    <Td dataLabel="Mode">
+                      <span>{OPERATION_MODE_LABELS[op.mode ?? 'mirrorToDisk']}</span>
+                      {op.destinationRegistry && (
+                        <div className="pf-v6-u-font-size-sm pf-v6-u-mt-xs">{op.destinationRegistry}</div>
+                      )}
                     </Td>
                     <Td isActionCell>
                       <Dropdown
