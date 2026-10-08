@@ -57,6 +57,13 @@ interface RegistryEntry {
   error?: string;
 }
 
+interface DestinationCredential {
+  registry: string;
+  username: string;
+  status?: RegistryEntry['status'];
+  error?: string;
+}
+
 interface SystemInfo {
   ocMirrorVersion: string;
   systemArchitecture: string;
@@ -97,6 +104,19 @@ interface CatalogSyncStatus {
   hasRuntimeSyncData?: boolean;
 }
 
+const RegistryStatusLabel = ({ status, error }: { status?: RegistryEntry['status']; error?: string }) => (
+  <>
+    {status === 'authenticated' && <Label status="success">Authenticated</Label>}
+    {status === 'failed' && (
+      <Popover bodyContent={error || 'Authentication failed'} position="left">
+        <Label status="danger" style={{ cursor: 'pointer' }}>Failed</Label>
+      </Popover>
+    )}
+    {status === 'verifying' && <Label status="info">Verifying...</Label>}
+    {status === 'not_verified' && <Label color="grey">Not verified</Label>}
+  </>
+);
+
 const SettingsPage: React.FC = () => {
   const { addSuccessAlert, addDangerAlert } = useAlerts();
 
@@ -121,6 +141,12 @@ const SettingsPage: React.FC = () => {
   const [pullSecretFilename, setPullSecretFilename] = useState('');
   const [pullSecretStatus, setPullSecretStatus] = useState<{ detected: boolean; path: string | null }>({ detected: false, path: null });
   const [registries, setRegistries] = useState<RegistryEntry[]>([]);
+  const [destinationCredentials, setDestinationCredentials] = useState<DestinationCredential[]>([]);
+  const [credentialsManagedExternally, setCredentialsManagedExternally] = useState(false);
+  const [credentialsPath, setCredentialsPath] = useState<string | null>(null);
+  const [credentialsError, setCredentialsError] = useState<string | null>(null);
+  const [newCredential, setNewCredential] = useState({ registry: '', username: '', password: '' });
+  const [savingCredential, setSavingCredential] = useState(false);
 
   const [catalogSyncStatus, setCatalogSyncStatus] = useState<CatalogSyncStatus>({
     status: 'idle', lastSyncTime: null, syncStartTime: null, successCount: 0, failedCount: 0,
@@ -276,6 +302,58 @@ const SettingsPage: React.FC = () => {
     }
   };
 
+  const fetchDestinationCredentials = async () => {
+    try {
+      const response = await axios.get('/api/registry-credentials');
+      setDestinationCredentials(response.data.credentials || []);
+      setCredentialsManagedExternally(!!response.data.managedExternally);
+      setCredentialsPath(response.data.path || null);
+      setCredentialsError(response.data.error || null);
+    } catch (error: any) {
+      setCredentialsError(error.response?.data?.error || 'Failed to load destination registry credentials');
+    }
+  };
+
+  const saveDestinationCredential = async () => {
+    setSavingCredential(true);
+    try {
+      await axios.put('/api/registry-credentials', newCredential);
+      addSuccessAlert(`Credentials saved for ${newCredential.registry}`);
+      setNewCredential({ registry: '', username: '', password: '' });
+      await fetchDestinationCredentials();
+    } catch (error: any) {
+      addDangerAlert(error.response?.data?.error || 'Failed to save credentials');
+    } finally {
+      setSavingCredential(false);
+    }
+  };
+
+  const deleteDestinationCredential = async (registry: string) => {
+    try {
+      await axios.delete(`/api/registry-credentials/${encodeURIComponent(registry)}`);
+      addSuccessAlert(`Credentials removed for ${registry}`);
+      await fetchDestinationCredentials();
+    } catch (error: any) {
+      addDangerAlert(error.response?.data?.error || 'Failed to remove credentials');
+    }
+  };
+
+  const verifyDestinationCredential = async (registry: string) => {
+    setDestinationCredentials(prev => prev.map(c =>
+      c.registry === registry ? { ...c, status: 'verifying' as const } : c,
+    ));
+    try {
+      const response = await axios.post('/api/registry-credentials/verify', { registry });
+      setDestinationCredentials(prev => prev.map(c =>
+        c.registry === registry ? { ...c, status: response.data.status, error: response.data.error } : c,
+      ));
+    } catch {
+      setDestinationCredentials(prev => prev.map(c =>
+        c.registry === registry ? { ...c, status: 'failed' as const, error: 'Verification request failed' } : c,
+      ));
+    }
+  };
+
   const fetchPullSecretStatus = async () => {
     try {
       const [statusRes, contentRes] = await Promise.all([
@@ -316,6 +394,7 @@ const SettingsPage: React.FC = () => {
     fetchSystemInfo();
     fetchPullSecretStatus();
     fetchRegistries();
+    fetchDestinationCredentials();
     fetchSyncStatus();
     fetchCatalogDigests();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -500,22 +579,7 @@ const SettingsPage: React.FC = () => {
                         {registries.map((r) => (
                           <Tr key={r.registry}>
                             <Td>{r.registry}</Td>
-                            <Td>
-                              {r.status === 'authenticated' && (
-                                <Label status="success">Authenticated</Label>
-                              )}
-                              {r.status === 'failed' && (
-                                <Popover bodyContent={r.error || 'Authentication failed'} position="left">
-                                  <Label status="danger" style={{ cursor: 'pointer' }}>Failed</Label>
-                                </Popover>
-                              )}
-                              {r.status === 'verifying' && (
-                                <Label status="info">Verifying...</Label>
-                              )}
-                              {r.status === 'not_verified' && (
-                                <Label color="grey">Not verified</Label>
-                              )}
-                            </Td>
+                            <Td><RegistryStatusLabel status={r.status} error={r.error} /></Td>
                           </Tr>
                         ))}
                       </Tbody>
@@ -533,6 +597,107 @@ const SettingsPage: React.FC = () => {
                       </Button>
                     </ActionGroup>
                   </>
+                )}
+
+                <Title headingLevel="h3" className="pf-v6-u-mt-xl pf-v6-u-mb-md">Destination Registry Credentials</Title>
+                <HelperText className="pf-v6-u-mb-md">
+                  <HelperTextItem>
+                    Credentials for the registries that mirror-to-mirror and disk-to-mirror push to. They are kept
+                    separate from the pull secret and take precedence over it for the same host.
+                  </HelperTextItem>
+                </HelperText>
+
+                {credentialsError && (
+                  <Alert variant="danger" isInline title="Cannot read destination registry credentials" className="pf-v6-u-mb-md">
+                    {credentialsError}
+                  </Alert>
+                )}
+                {credentialsManagedExternally && (
+                  <Alert variant="info" isInline title="Managed outside the application" className="pf-v6-u-mb-md">
+                    Destination registry credentials are managed outside the application at {credentialsPath} and
+                    cannot be changed here.
+                  </Alert>
+                )}
+
+                {destinationCredentials.length > 0 && (
+                  <Table aria-label="Destination registry credentials" variant="compact" className="pf-v6-u-mb-md">
+                    <Thead>
+                      <Tr>
+                        <Th>Registry</Th>
+                        <Th>Username</Th>
+                        <Th>Status</Th>
+                        <Th screenReaderText="Actions" />
+                      </Tr>
+                    </Thead>
+                    <Tbody>
+                      {destinationCredentials.map((c) => (
+                        <Tr key={c.registry}>
+                          <Td>{c.registry}</Td>
+                          <Td>{c.username}</Td>
+                          <Td><RegistryStatusLabel status={c.status} error={c.error} /></Td>
+                          <Td isActionCell>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              icon={<SearchIcon />}
+                              onClick={() => void verifyDestinationCredential(c.registry)}
+                              aria-label={`Verify credentials for ${c.registry}`}
+                            >
+                              Verify
+                            </Button>{' '}
+                            {!credentialsManagedExternally && (
+                              <Button
+                                variant="plain"
+                                icon={<TrashAltIcon />}
+                                onClick={() => void deleteDestinationCredential(c.registry)}
+                                aria-label={`Delete credentials for ${c.registry}`}
+                              />
+                            )}
+                          </Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </Table>
+                )}
+
+                {!credentialsManagedExternally && (
+                  <Flex alignItems={{ default: 'alignItemsFlexEnd' }} spaceItems={{ default: 'spaceItemsMd' }}>
+                    <FormGroup label="Registry" fieldId="dest-cred-registry">
+                      <TextInput
+                        id="dest-cred-registry"
+                        aria-label="Destination registry host"
+                        placeholder="registry.example.com:5000"
+                        value={newCredential.registry}
+                        onChange={(_e, v) => setNewCredential(prev => ({ ...prev, registry: v.trim() }))}
+                      />
+                    </FormGroup>
+                    <FormGroup label="Username" fieldId="dest-cred-username">
+                      <TextInput
+                        id="dest-cred-username"
+                        aria-label="Destination registry username"
+                        value={newCredential.username}
+                        onChange={(_e, v) => setNewCredential(prev => ({ ...prev, username: v }))}
+                      />
+                    </FormGroup>
+                    <FormGroup label="Password or token" fieldId="dest-cred-password">
+                      <TextInput
+                        id="dest-cred-password"
+                        type="password"
+                        aria-label="Destination registry password"
+                        value={newCredential.password}
+                        onChange={(_e, v) => setNewCredential(prev => ({ ...prev, password: v }))}
+                      />
+                    </FormGroup>
+                    <Button
+                      variant="primary"
+                      icon={<SaveIcon />}
+                      onClick={() => void saveDestinationCredential()}
+                      isLoading={savingCredential}
+                      isDisabled={savingCredential || !newCredential.registry || !newCredential.username || !newCredential.password}
+                    >
+                      Save credentials
+                    </Button>
+                  </Flex>
                 )}
               </div>
             </Tab>
