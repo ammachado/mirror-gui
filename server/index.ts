@@ -2076,8 +2076,9 @@ app.get('/api/operations/:id/artifacts/:filename', async (req: Request, res: Res
     }
 
     // no-transform keeps the global compression middleware from gzipping the archive,
-    // which would drop Content-Length and break Range (resume) requests.
-    res.setHeader('Cache-Control', 'no-transform');
+    // which would drop Content-Length and break Range (resume) requests. no-cache forces
+    // revalidation, because reused mirror folders rewrite archives under the same name.
+    res.setHeader('Cache-Control', 'private, no-cache, no-transform');
     // The name is already validated; allow dot-directories in the destination path itself.
     res.download(artifactPath, filename, { dotfiles: 'allow' }, (error) => {
       if (!error) return;

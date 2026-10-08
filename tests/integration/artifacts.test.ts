@@ -133,6 +133,15 @@ describe('Artifacts API', () => {
       expect(res.headers['accept-ranges']).toBe('bytes');
     });
 
+    it('forces revalidation, since reused mirror folders rewrite archives under the same name', async () => {
+      const res = await request
+        .get('/api/operations/artifacts-success/artifacts/mirror_000001.tar')
+        .buffer(true)
+        .parse(binaryParser);
+      expect(res.status).toBe(200);
+      expect(res.headers['cache-control']).toBe('private, no-cache, no-transform');
+    });
+
     it('answers a Range request with 206 and exactly the requested bytes (resume)', async () => {
       const res = await request
         .get('/api/operations/artifacts-success/artifacts/mirror_000001.tar')
