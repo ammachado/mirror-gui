@@ -621,7 +621,7 @@ Start a new mirror operation.
 
 The meaning of `mirrorDestinationSubdir` depends on the mode: the archive output folder for `mirrorToDisk`, the `--workspace` folder for `mirrorToMirror` (created if missing), and the `--from` archive source for `diskToMirror` (must exist and contain `mirror_*.tar`; `404` when missing, `400` when it has no archives). A start returns `409` when a running operation uses the same folder and either operation is `mirrorToMirror` or `diskToMirror`.
 
-For registry-target modes the server merges the pull secret with the destination registry credentials (destination entries win for the same host) into a temporary `0600` authfile that is deleted when the operation ends. A malformed pull secret or credentials file returns `500` naming the file.
+For registry-target modes the server merges the pull secret with the destination registry credentials (destination entries win for the same host; if the destination has a namespace and the pull secret also has its host, the destination entry is keyed by the full destination path so pulls from that host keep the pull secret) into a temporary `0600` authfile that is deleted when the operation ends. A malformed pull secret or credentials file returns `500` naming the file.
 
 **Response:**
 ```json
