@@ -97,6 +97,16 @@ Filter and review all past operations. Export to CSV.
 
 ![History](docs/screenshots/history.png)
 
+#### Downloading artifacts on OpenShift
+
+When mirror-gui runs as a pod, the mirror output lives on a persistent volume. The details of a successful operation then include an **Artifacts** table with a download link for each file in the mirror destination (typically the `mirror_*.tar` archives to carry across the air gap). Downloads stream from disk and can be resumed by the browser.
+
+Very large downloads through an OpenShift Route may exceed the router's default timeout. If downloads stop partway, raise it on the Route, for example:
+
+```bash
+oc annotate route mirror-gui --overwrite haproxy.router.openshift.io/timeout=2h
+```
+
 ### Settings
 
 Configure environment preferences across four tabs:
@@ -117,6 +127,7 @@ Configure environment preferences across four tabs:
 | `IMAGE_NAME` | Override the container image name | `mirror-gui:latest` |
 | `WEB_PORT` | Override the host port | `3000` |
 | `CACHE_DIR` | Override the oc-mirror cache directory (absolute host path) | `./data/cache` |
+| `MIRROR_GUI_ARTIFACT_DOWNLOADS` | Force artifact downloads on (`true`) or off (`false`). When unset, downloads are enabled only when running in a Kubernetes/OpenShift pod | auto-detect |
 
 ## Compatibility
 

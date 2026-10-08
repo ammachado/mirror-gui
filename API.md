@@ -99,7 +99,8 @@ Get system information including versions, disk space, architecture, and cache d
   "hostDataDir": "/home/user/mirror-gui/data",
   "cacheDir": "/app/data/cache",
   "hostCacheDir": "/home/user/mirror-gui/data/cache",
-  "cacheSizeBytes": 2552543632
+  "cacheSizeBytes": 2552543632,
+  "artifactDownloadsEnabled": true
 }
 ```
 
@@ -108,6 +109,7 @@ Get system information including versions, disk space, architecture, and cache d
 - `cacheDir`: The cache directory inside the container
 - `hostCacheDir`: The cache directory mapped to the host path
 - `cacheSizeBytes`: Current cache size in bytes
+- `artifactDownloadsEnabled`: Whether operation artifacts can be downloaded through the API. True when running in a Kubernetes/OpenShift pod (`KUBERNETES_SERVICE_HOST` is set), unless overridden by `MIRROR_GUI_ARTIFACT_DOWNLOADS=true|false`
 
 #### GET /api/system/status
 Get system status including oc-mirror version, overall health, and pull secret detection.

@@ -19,6 +19,7 @@ import {
   getQueryStringValue,
   getVersionsFromMetadata,
   normalizeChannels,
+  isArtifactDownloadEnabled,
 } from './utils.js';
 
 const fsp = fs.promises;
@@ -161,6 +162,7 @@ interface SystemInfo {
   cacheDir: string;
   hostCacheDir: string;
   cacheSizeBytes: number;
+  artifactDownloadsEnabled: boolean;
 }
 
 interface CatalogEntry {
@@ -394,6 +396,7 @@ async function getSystemInfo(): Promise<SystemInfo> {
       cacheDir: CACHE_DIR,
       hostCacheDir,
       cacheSizeBytes,
+      artifactDownloadsEnabled: isArtifactDownloadEnabled(),
     };
   } catch (error: unknown) {
     console.error('Error getting system info:', error);
@@ -412,6 +415,7 @@ async function getSystemInfo(): Promise<SystemInfo> {
       cacheDir: CACHE_DIR,
       hostCacheDir,
       cacheSizeBytes: 0,
+      artifactDownloadsEnabled: isArtifactDownloadEnabled(),
     };
   }
 }
