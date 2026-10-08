@@ -11,6 +11,7 @@ import compression from 'compression';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getChannelObjectsFromGeneratedOperator } from './catalogChannels.js';
 import { isPathAvailable } from './pathAvailability.js';
+import { isValidArtifactName, listArtifacts, resolveArtifactPath } from './artifacts.js';
 import {
   type ChannelObject,
   parseOcMirrorVersion,
@@ -2005,6 +2006,94 @@ app.get('/api/operations/:id/details', async (req: Request, res: Response) => {
   } catch (error: unknown) {
     console.error('Error getting operation details:', error);
     res.status(500).json({ error: 'Failed to get operation details' });
+  }
+});
+
+/**
+ * Shared guard for the artifact routes. Sends the error response itself and
+ * returns null when the request cannot proceed.
+ */
+async function loadArtifactOperation(req: Request, res: Response): Promise<OperationRecord | null> {
+  if (!isArtifactDownloadEnabled()) {
+    res.status(404).json({ error: 'Artifact downloads are not enabled' });
+    return null;
+  }
+
+  const { id } = req.params;
+  // Express decodes %2F in params; never let the id address a file outside OPERATIONS_DIR.
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    res.status(404).json({ error: 'Operation not found' });
+    return null;
+  }
+
+  let operation: OperationRecord;
+  try {
+    operation = await getOperation(id);
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      res.status(404).json({ error: 'Operation not found' });
+      return null;
+    }
+    throw e;
+  }
+
+  if (operation.status !== 'success') {
+    res.status(409).json({ error: 'Artifacts are only available for successful operations' });
+    return null;
+  }
+  return operation;
+}
+
+app.get('/api/operations/:id/artifacts', async (req: Request, res: Response) => {
+  try {
+    const operation = await loadArtifactOperation(req, res);
+    if (!operation) return;
+
+    const mirrorDestination = operation.mirrorDestination ?? null;
+    const artifacts = mirrorDestination ? await listArtifacts(mirrorDestination) : [];
+    res.json({ mirrorDestination, artifacts });
+  } catch (error: unknown) {
+    console.error('Error listing artifacts:', error);
+    res.status(500).json({ error: 'Failed to list artifacts' });
+  }
+});
+
+app.get('/api/operations/:id/artifacts/:filename', async (req: Request, res: Response) => {
+  try {
+    const operation = await loadArtifactOperation(req, res);
+    if (!operation) return;
+
+    const { filename } = req.params;
+    if (!isValidArtifactName(filename)) {
+      return res.status(400).json({ error: 'Invalid artifact filename' });
+    }
+
+    const artifactPath = operation.mirrorDestination
+      ? await resolveArtifactPath(operation.mirrorDestination, filename)
+      : null;
+    if (!artifactPath) {
+      return res.status(404).json({ error: 'Artifact not found' });
+    }
+
+    // no-transform keeps the global compression middleware from gzipping the archive,
+    // which would drop Content-Length and break Range (resume) requests.
+    res.setHeader('Cache-Control', 'no-transform');
+    // The name is already validated; allow dot-directories in the destination path itself.
+    res.download(artifactPath, filename, { dotfiles: 'allow' }, (error) => {
+      if (!error) return;
+      if ((error as NodeJS.ErrnoException).code === 'ECONNABORTED') return;
+      console.error(`Error streaming artifact ${artifactPath}:`, error);
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.status(500).json({ error: 'Failed to download artifact' });
+      }
+    });
+  } catch (error: unknown) {
+    console.error('Error downloading artifact:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to download artifact' });
+    }
   }
 });
 
