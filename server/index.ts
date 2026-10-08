@@ -9,17 +9,28 @@ import YAML from 'yaml';
 import { v4 as uuidv4 } from 'uuid';
 import compression from 'compression';
 
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { getChannelObjectsFromGeneratedOperator } from './catalogChannels.js';
 import { isPathAvailable } from './pathAvailability.js';
-import { isValidRegistryHost } from './operationModes.js';
+import { buildOcMirrorArgs } from './ocMirrorArgs.js';
 import {
+  type OperationMode,
+  OPERATION_MODES,
+  getDestinationRegistryError,
+  isOperationMode,
+  isRegistryTargetMode,
+  isValidRegistryHost,
+} from './operationModes.js';
+import {
+  type AuthFile,
   AuthFileError,
   listCredentials,
+  mergeAuthFiles,
   readAuthFile,
   removeCredential,
   resolveCredentialsLocation,
   upsertCredential,
+  writeAuthFile,
 } from './registryCredentials.js';
 import {
   type ChannelObject,
@@ -42,6 +53,9 @@ interface OperationRecord {
   id: string;
   name: string;
   configFile: string;
+  /** Absent on records created before modes existed; read as 'mirrorToDisk'. */
+  mode?: OperationMode;
+  destinationRegistry?: string;
   mirrorDestination?: string;
   status: 'running' | 'success' | 'failed' | 'stopped';
   startedAt: string;
@@ -56,6 +70,7 @@ interface OptionalFlagsBody {
   imageTimeout?: string;
   retryDelay?: string;
   retryTimes?: number;
+  maxNestedPaths?: number;
 }
 
 const OPTIONAL_FLAG_KEYS = new Set([
@@ -63,6 +78,7 @@ const OPTIONAL_FLAG_KEYS = new Set([
   'imageTimeout',
   'retryDelay',
   'retryTimes',
+  'maxNestedPaths',
 ]);
 
 /** Accept Go-style durations used by oc-mirror: "30s", "10m", "10m30s". */
@@ -80,6 +96,7 @@ function parseDurationToSeconds(value: string): number | null {
 
 function buildOptionalFlagArgs(
   raw: unknown,
+  mode: OperationMode,
 ): { ok: true; args: string[] } | { ok: false; error: string } {
   if (raw == null) {
     return { ok: true, args: [] };
@@ -157,6 +174,20 @@ function buildOptionalFlagArgs(
       };
     }
     additionalArgs.push('--retry-times', String(typed.retryTimes));
+  }
+
+  if (typed.maxNestedPaths != null) {
+    if (!isRegistryTargetMode(mode)) {
+      return { ok: false, error: 'optionalFlags.maxNestedPaths is only valid for mirrorToMirror and diskToMirror' };
+    }
+    if (
+      typeof typed.maxNestedPaths !== 'number' ||
+      !Number.isSafeInteger(typed.maxNestedPaths) ||
+      typed.maxNestedPaths < 1
+    ) {
+      return { ok: false, error: 'optionalFlags.maxNestedPaths must be a positive integer' };
+    }
+    additionalArgs.push('--max-nested-paths', String(typed.maxNestedPaths));
   }
 
   return { ok: true, args: additionalArgs };
@@ -314,6 +345,12 @@ function authfileWriteFailure(error: unknown, fallbackMessage: string): { status
 }
 
 const runningProcesses = new Map<string, RunningProcess>();
+// Modes of running operations per folder. A start conflicts when a mirrorToMirror or
+// diskToMirror operation is on either side: M2D deletes earlier archives in its folder,
+// which would break a D2M run reading from it, and M2M/D2M share oc-mirror's working-dir.
+// mirrorToDisk runs on the same folder may overlap, as they always could. Checked and
+// claimed synchronously so two starts cannot both pass the check.
+const foldersInUse = new Map<string, OperationMode[]>();
 const stoppedOperations = new Set<string>();
 
 async function ensureDirectories(): Promise<void> {
@@ -1625,11 +1662,42 @@ app.get('/api/operations/history', async (req: Request, res: Response) => {
 
 app.post('/api/operations/start', async (req: Request, res: Response) => {
   try {
-    const { configFile, mirrorDestinationSubdir, optionalFlags } = req.body;
+    const {
+      configFile,
+      mirrorDestinationSubdir,
+      optionalFlags,
+      mode: rawMode,
+      destinationRegistry,
+      skipDestTlsVerify,
+    } = req.body;
     const operationId = uuidv4();
     const configPath = path.join(CONFIGS_DIR, configFile);
 
-    const optionalFlagsResult = buildOptionalFlagArgs(optionalFlags);
+    const mode: unknown = rawMode ?? 'mirrorToDisk';
+    if (!isOperationMode(mode)) {
+      return res.status(400).json({
+        error: `Unknown mode: ${String(rawMode)}`,
+        help: `Use one of: ${OPERATION_MODES.join(', ')}`,
+      });
+    }
+
+    const targetsRegistry = isRegistryTargetMode(mode);
+    if (!targetsRegistry && (destinationRegistry !== undefined || skipDestTlsVerify !== undefined)) {
+      return res.status(400).json({
+        error: 'destinationRegistry and skipDestTlsVerify are only valid for mirrorToMirror and diskToMirror',
+      });
+    }
+    if (targetsRegistry) {
+      const destinationError = getDestinationRegistryError(destinationRegistry);
+      if (destinationError) {
+        return res.status(400).json({ error: destinationError });
+      }
+      if (skipDestTlsVerify !== undefined && typeof skipDestTlsVerify !== 'boolean') {
+        return res.status(400).json({ error: 'skipDestTlsVerify must be a boolean' });
+      }
+    }
+
+    const optionalFlagsResult = buildOptionalFlagArgs(optionalFlags, mode);
     if (!optionalFlagsResult.ok) {
       return res.status(400).json({ error: optionalFlagsResult.error });
     }
@@ -1672,6 +1740,22 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
     }
 
     const mirrorPath = path.join(baseMirrorPath, subdirName);
+
+    if (mode === 'diskToMirror') {
+      let entries: string[];
+      try {
+        entries = await fsp.readdir(mirrorPath);
+      } catch {
+        return res.status(404).json({ error: 'Archive source folder not found', path: mirrorPath });
+      }
+      if (!entries.some((name) => /^mirror_.*\.tar$/.test(name))) {
+        return res.status(400).json({
+          error: 'Archive source folder contains no mirror_*.tar archives',
+          path: mirrorPath,
+          help: 'Copy the archives produced by a mirror-to-disk run into this folder first.',
+        });
+      }
+    }
 
     try {
       await fsp.mkdir(baseMirrorPath, { recursive: true, mode: 0o777 });
@@ -1736,10 +1820,50 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       });
     }
 
+    let mergedAuth: AuthFile | null = null;
+    if (targetsRegistry) {
+      try {
+        const credentialsLocation = resolveCredentialsLocation(process.env, STORAGE_DIR);
+        const [pullSecretAuth, destinationAuth] = await Promise.all([
+          readAuthFile(AUTHFILE_PATH, 'Pull secret', false),
+          readAuthFile(credentialsLocation.path, 'Destination registry credentials', true),
+        ]);
+        mergedAuth = mergeAuthFiles(pullSecretAuth, destinationAuth);
+      } catch (error: unknown) {
+        if (error instanceof AuthFileError) {
+          return res.status(500).json({ error: error.message });
+        }
+        throw error;
+      }
+    }
+
+    // No await between this check and the add, so concurrent starts cannot both claim the folder.
+    const activeModes = foldersInUse.get(mirrorPath) ?? [];
+    if (activeModes.length > 0 && (targetsRegistry || activeModes.some(isRegistryTargetMode))) {
+      return res.status(409).json({
+        error: 'Another running operation is using this folder',
+        path: mirrorPath,
+        help: 'Wait for it to finish or choose a different folder.',
+      });
+    }
+    foldersInUse.set(mirrorPath, [...activeModes, mode]);
+    let folderReleased = false;
+    const releaseFolder = () => {
+      if (folderReleased) return;
+      folderReleased = true;
+      const remaining = [...(foldersInUse.get(mirrorPath) ?? [])];
+      const index = remaining.indexOf(mode);
+      if (index !== -1) remaining.splice(index, 1);
+      if (remaining.length === 0) foldersInUse.delete(mirrorPath);
+      else foldersInUse.set(mirrorPath, remaining);
+    };
+
     const operation: OperationRecord = {
       id: operationId,
       name: `Mirror Operation ${operationId.slice(0, 8)}`,
       configFile,
+      mode,
+      ...(targetsRegistry ? { destinationRegistry } : {}),
       mirrorDestination: mirrorPath,
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -1749,11 +1873,42 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
     try {
       await saveOperation(operation);
     } catch (error: unknown) {
+      releaseFolder();
       console.error(`Error saving operation ${operationId}:`, error);
       return res.status(500).json({
         error: 'Failed to create operation record',
         details: (error as Error).message,
       });
+    }
+
+    const tempAuthfilePath = targetsRegistry ? path.join(RUN_DIR, `authfile-${operationId}.json`) : null;
+    const removeTempAuthfile = async () => {
+      if (!tempAuthfilePath) return;
+      try {
+        await fsp.rm(tempAuthfilePath, { force: true });
+      } catch (error: unknown) {
+        console.error(`Failed to remove temporary authfile for ${operationId}:`, error);
+      }
+    };
+
+    if (tempAuthfilePath && mergedAuth) {
+      try {
+        await fsp.mkdir(RUN_DIR, { recursive: true });
+        await writeAuthFile(tempAuthfilePath, mergedAuth);
+      } catch (error: unknown) {
+        await removeTempAuthfile();
+        releaseFolder();
+        console.error(`Error writing temporary authfile for ${operationId}:`, error);
+        await updateOperation(operationId, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          errorMessage: 'Failed to prepare registry credentials',
+        });
+        return res.status(500).json({
+          error: 'Failed to prepare registry credentials',
+          details: (error as Error).message,
+        });
+      }
     }
 
     const logFile = path.join(LOGS_DIR, `${operationId}.log`);
@@ -1766,21 +1921,34 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       if (!logStream.destroyed) logStream.end();
     };
 
-    const mirrorUrl = pathToFileURL(mirrorPath).href;
-
-  const child = spawn('oc-mirror', [
-      '--v2',
-      '--config', configPath,
-      '--dest-tls-verify=false',
-      '--src-tls-verify=false',
-      '--cache-dir', cacheDir,
-      '--authfile', AUTHFILE_PATH,
-      ...additionalArgs,
-      mirrorUrl,
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: RUN_DIR,
+    const ocMirrorArgs = buildOcMirrorArgs({
+      mode,
+      configPath,
+      folderPath: mirrorPath,
+      cacheDir,
+      authfilePath: tempAuthfilePath ?? AUTHFILE_PATH,
+      destinationRegistry: targetsRegistry ? destinationRegistry : undefined,
+      skipDestTlsVerify: skipDestTlsVerify === true,
+      additionalArgs,
     });
+
+    let child: ChildProcess;
+    try {
+      child = spawn('oc-mirror', ocMirrorArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: RUN_DIR,
+      });
+    } catch (error: unknown) {
+      finalizeLogStream();
+      await removeTempAuthfile();
+      releaseFolder();
+      await updateOperation(operationId, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        errorMessage: (error as Error).message,
+      });
+      throw error;
+    }
 
     runningProcesses.set(operationId, {
       pid: child.pid,
@@ -1807,6 +1975,8 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       operationFinalized = true;
       runningProcesses.delete(operationId);
       finalizeLogStream();
+      releaseFolder();
+      await removeTempAuthfile();
 
       let logs = stdout + stderr;
       if (!logs) {
@@ -1858,6 +2028,8 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       operationFinalized = true;
       runningProcesses.delete(operationId);
       finalizeLogStream();
+      releaseFolder();
+      await removeTempAuthfile();
 
       const completedAt = new Date().toISOString();
       const duration = Math.floor((new Date(completedAt).getTime() - new Date(operation.startedAt).getTime()) / 1000);
@@ -1965,7 +2137,14 @@ app.get('/api/operations/:id/details', async (req: Request, res: Response) => {
       throw e;
     }
 
+    const mode = operation.mode ?? 'mirrorToDisk';
     const details = {
+      mode,
+      destinationRegistry: operation.destinationRegistry,
+      // oc-mirror writes IDMS/ITMS/CatalogSource under <workspace or --from dir>/working-dir.
+      clusterResourcesPath: isRegistryTargetMode(mode) && operation.mirrorDestination
+        ? path.join(operation.mirrorDestination, 'working-dir', 'cluster-resources')
+        : undefined,
       imagesMirrored: 0,
       operatorsMirrored: 0,
       totalSize: 0,
