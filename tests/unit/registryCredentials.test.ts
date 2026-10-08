@@ -128,4 +128,27 @@ describe('mergeAuthFiles', () => {
       auths: { 'registry.redhat.io': { auth: 'rh' }, 'reg.example.com': { auth: 'new' } },
     });
   });
+
+  // Mirror-to-mirror pulls and pushes with one authfile. When the destination
+  // host is also a source host (quay.io/myorg vs quay.io/openshift-release-dev),
+  // a host-wide override would replace the pull secret and break source pulls.
+  it('scopes destination credentials to the destination path when the pull secret also has that host', () => {
+    const merged = mergeAuthFiles(
+      { auths: { 'quay.io': { auth: 'rh' } } },
+      { auths: { 'quay.io': { auth: 'robot' } } },
+      'quay.io/myorg/mirror',
+    );
+    expect(merged).toEqual({
+      auths: { 'quay.io': { auth: 'rh' }, 'quay.io/myorg/mirror': { auth: 'robot' } },
+    });
+  });
+
+  it('keeps the host-wide override when the destination is a bare host', () => {
+    const merged = mergeAuthFiles(
+      { auths: { 'reg.example.com:5000': { auth: 'old' } } },
+      { auths: { 'reg.example.com:5000': { auth: 'new' } } },
+      'reg.example.com:5000',
+    );
+    expect(merged).toEqual({ auths: { 'reg.example.com:5000': { auth: 'new' } } });
+  });
 });
