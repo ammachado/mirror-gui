@@ -685,6 +685,34 @@ Get detailed information about a specific operation.
 - `mirrorDestination`: The full container path where mirror files are saved (e.g., `/app/data/mirrors/default`)
 - Host path is `{project-root}/data/mirrors/{subdirectory}/` where `{project-root}` is typically the application directory
 
+#### GET /api/operations/:id/artifacts
+List the files in the mirror destination of a successful operation, so they can be downloaded. Available only when `artifactDownloadsEnabled` is true in `GET /api/system/info`.
+
+Only top-level regular files are listed (in practice the `mirror_*.tar` archives). Directories such as `working-dir/`, symlinks, and dotfiles are excluded. Mirror destinations can be shared by several operations, so the list reflects the folder's current contents.
+
+**Response:**
+```json
+{
+  "mirrorDestination": "/app/data/mirrors/default",
+  "artifacts": [
+    { "name": "mirror_000001.tar", "size": 53687091200, "modifiedAt": "2026-10-08T12:00:00.000Z" }
+  ]
+}
+```
+
+**Error (404):** Downloads are not enabled, or the operation does not exist.
+
+**Error (409):** The operation did not finish successfully.
+
+#### GET /api/operations/:id/artifacts/:filename
+Download one file listed by `GET /api/operations/:id/artifacts`. The response streams from disk with `Content-Disposition: attachment` and supports HTTP `Range` requests, so interrupted downloads can be resumed.
+
+**Error (400):** The filename is not a plain basename (path separators, traversal, or a leading dot).
+
+**Error (404):** Downloads are not enabled, the operation does not exist, or the file is not a regular file in the mirror destination.
+
+**Error (409):** The operation did not finish successfully.
+
 #### GET /api/operations/:id/logs
 Get operation logs.
 
