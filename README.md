@@ -86,6 +86,17 @@ helm upgrade --install mirror-gui charts/mirror-gui \
 
 Choose the PVC size and storage class for your cluster. Setting `persistence.enabled=false` makes all data ephemeral. The chart disables its OpenShift Route by default. Setting `route.enabled=true` exposes an unauthenticated administrative interface that must be protected by cluster access controls.
 
+Behind a corporate proxy, set the outbound proxy so `oc-mirror`, catalog sync, and registry verification can reach the registries. `noProxy` is a comma-separated list; include your internal registry hosts and cluster ranges:
+
+```bash
+helm upgrade --install mirror-gui charts/mirror-gui \
+  --set proxy.httpProxy=http://proxy.example.com:3128 \
+  --set proxy.httpsProxy=http://proxy.example.com:3128 \
+  --set-string proxy.noProxy='.svc\,.cluster.local\,localhost\,127.0.0.1'
+```
+
+`mirror-gui.sh` forwards `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` (either case) from the host environment to the container when they are set. Proxy authentication goes in the proxy URL, so treat a value containing credentials as a secret. Custom CA bundles for TLS-intercepting proxies are not supported yet.
+
 `helm uninstall` deletes the PVC and everything mirrored into it. Set `persistence.retain=true` to keep the claim instead. A retained claim survives the release, so reinstalling under the same release name fails until you delete it:
 
 ```bash

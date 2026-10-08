@@ -37,6 +37,14 @@ pullSecret:
   existingSecret: ""
   key: pull-secret.json
 
+# Outbound proxy for reaching registries (oc-mirror, catalog sync, registry verification).
+# Leave httpProxy and httpsProxy empty for a direct connection. noProxy is only rendered
+# when a proxy is set; add the registry hosts and cluster ranges the proxy must not carry.
+proxy:
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+
 route:
   enabled: false
   host: ""
