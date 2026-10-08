@@ -100,7 +100,7 @@ helm upgrade --install mirror-gui charts/mirror-gui \
 `helm uninstall` deletes the PVC and everything mirrored into it. Set `persistence.retain=true` to keep the claim instead. A retained claim survives the release, so reinstalling under the same release name fails until you delete it:
 
 ```bash
-oc -n mirror-gui delete pvc mirror-gui-mirror-gui
+oc -n mirror-gui delete pvc mirror-gui
 ```
 
 ## Features
