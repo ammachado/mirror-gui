@@ -2787,3 +2787,90 @@ Expected: all pass. Report any skipped suites (for example Helm tests when `helm
 - [ ] **Step 2: Manual smoke test of the real binary (optional, needs a registry)**
 
 With a local registry (`podman run -d -p 5000:5000 registry:2`) and the container running, start a mirror-to-mirror operation with a small ImageSetConfiguration (one additional image), destination `localhost:5000/smoke`, and "Skip TLS verification" checked. Confirm it succeeds and that `working-dir/cluster-resources` exists in the workspace folder. If this step is not run, say so in the hand-off.
+
+---
+
+### Task 10: Restrict the API to same-origin requests (security review finding)
+
+Added after a background security review flagged `app.use(cors())`: with every origin allowed, any web page open in the same browser could call the API and read responses, including the new credential endpoints and `GET /api/pull-secret/content`. The app does not need CORS: production serves the built UI from the same Express server, and dev runs Vite in middleware mode on the same origin; the UI only calls relative `/api/...` URLs. Execute this task right after Task 4.
+
+**Files:**
+- Modify: `server/index.ts` (remove `import cors from 'cors';` and `app.use(cors());`)
+- Modify: `API.md` (the `## CORS` section, ~line 977)
+- Test: `tests/integration/sameOrigin.test.ts`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks besides the existing routes.
+- Produces: no API shape change; cross-origin browser requests are no longer granted CORS headers.
+
+Do not change `package.json` (removing the now-unused `cors` and `@types/cors` dependencies needs a lockfile change and is left for the human to approve).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/integration/sameOrigin.test.ts`:
+
+```ts
+import { describe, it, expect, beforeAll } from 'vitest';
+import { getTestApp } from './helpers/testApp.js';
+
+// Without CORS headers a browser blocks other sites from reading API responses and from
+// sending non-simple requests (JSON PUT/DELETE need a preflight the server no longer grants).
+describe('Same-origin API access', () => {
+  let request: Awaited<ReturnType<typeof getTestApp>>;
+
+  beforeAll(async () => {
+    request = await getTestApp();
+  });
+
+  it('does not grant a cross-origin preflight for credential writes', async () => {
+    const res = await request
+      .options('/api/registry-credentials')
+      .set('Origin', 'https://evil.example')
+      .set('Access-Control-Request-Method', 'PUT')
+      .set('Access-Control-Request-Headers', 'content-type');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    expect(res.headers['access-control-allow-methods']).toBeUndefined();
+  });
+
+  it('does not let another origin read the pull secret', async () => {
+    const res = await request.get('/api/pull-secret/content').set('Origin', 'https://evil.example');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('still serves same-origin requests normally', async () => {
+    const res = await request.get('/api/health');
+    expect(res.status).toBe(200);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run tests/integration/sameOrigin.test.ts`
+Expected: FAIL on the first two cases (`access-control-allow-origin` is `*`).
+
+- [ ] **Step 3: Remove CORS from the server**
+
+In `server/index.ts`, delete the line `import cors from 'cors';` and the line `app.use(cors());`.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `npx vitest run tests/integration/sameOrigin.test.ts` then `npm test`
+Expected: PASS. The full suite must pass with no existing test changed.
+
+- [ ] **Step 5: Update API.md**
+
+Replace the body of the `## CORS` section with:
+
+```markdown
+The API does not send CORS headers, so browsers only allow the Mirror-GUI UI itself (same origin) to call it. Pages on other sites cannot read responses or send JSON write requests. Scripts and tools that are not browsers (curl, CI jobs) are unaffected. The API has no authentication; protect network access to it (see the Helm Route notes in the README).
+```
+
+- [ ] **Step 6: Lint and commit**
+
+```bash
+npm run lint
+git checkout -- catalog-data/.gitkeep
+git add server/index.ts API.md tests/integration/sameOrigin.test.ts
+git commit -m "fix: stop allowing cross-origin API access"
+```
