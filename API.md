@@ -845,6 +845,36 @@ Verify authentication against a specific registry using Docker v2 auth flow. Res
 }
 ```
 
+### Destination Registry Credentials
+
+Credentials for registries that mirror-to-mirror and disk-to-mirror push to. They are stored separately from the pull secret in `STORAGE_DIR/registry-credentials.json` (mode `0600`). When `OC_MIRROR_REGISTRY_CREDENTIALS` points to a file (for example a mounted Secret), that file is used read-only and write endpoints return `409`. Passwords and `auth` values are never returned.
+
+#### GET /api/registry-credentials
+
+```json
+{
+  "managedExternally": false,
+  "path": null,
+  "credentials": [
+    { "registry": "mirror.example.com:5000", "username": "alice", "status": "not_verified" }
+  ]
+}
+```
+
+`path` is set only when externally managed. When the file is malformed, `credentials` is empty and `error` describes the problem.
+
+#### PUT /api/registry-credentials
+
+Adds or replaces one entry. Body: `{ "registry": "host[:port]", "username": "alice", "password": "..." }`. Returns `400` for invalid input and `409` when externally managed.
+
+#### DELETE /api/registry-credentials/:registry
+
+Removes one entry. Returns `404` when absent and `409` when externally managed.
+
+#### POST /api/registry-credentials/verify
+
+Body: `{ "registry": "host[:port]" }`. Response: `{ "registry", "status": "authenticated" | "failed", "error"? }`.
+
 ### Cache Management
 
 #### POST /api/cache/cleanup

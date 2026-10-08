@@ -12,6 +12,15 @@ import compression from 'compression';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getChannelObjectsFromGeneratedOperator } from './catalogChannels.js';
 import { isPathAvailable } from './pathAvailability.js';
+import { isValidRegistryHost } from './operationModes.js';
+import {
+  AuthFileError,
+  listCredentials,
+  readAuthFile,
+  removeCredential,
+  resolveCredentialsLocation,
+  upsertCredential,
+} from './registryCredentials.js';
 import {
   type ChannelObject,
   parseOcMirrorVersion,
@@ -2143,6 +2152,44 @@ app.get('/api/registries', async (_req: Request, res: Response) => {
   }
 });
 
+// Registries like registry.redhat.io and quay.io reject Basic auth on /v2/ and expect the
+// OAuth2 token exchange advertised in WWW-Authenticate, so both steps are tried.
+async function verifyRegistryAuth(
+  registry: string,
+  auth: string,
+): Promise<{ status: 'authenticated' | 'failed'; error?: string }> {
+  try {
+    const response = await fetch(`https://${registry}/v2/`, {
+      headers: { 'Authorization': `Basic ${auth}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (response.ok) {
+      return { status: 'authenticated' };
+    }
+    if (response.status === 401) {
+      const wwwAuth = response.headers.get('www-authenticate') || '';
+      const realmMatch = wwwAuth.match(/realm="([^"]+)"/);
+      const serviceMatch = wwwAuth.match(/service="([^"]+)"/);
+      if (realmMatch) {
+        const tokenUrl = new URL(realmMatch[1]);
+        if (serviceMatch) tokenUrl.searchParams.set('service', serviceMatch[1]);
+        const tokenRes = await fetch(tokenUrl.toString(), {
+          headers: { 'Authorization': `Basic ${auth}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (tokenRes.ok) {
+          return { status: 'authenticated' };
+        }
+        const body = await tokenRes.text().catch(() => '');
+        return { status: 'failed', error: `Authentication failed (${tokenRes.status}): ${body.slice(0, 200)}` };
+      }
+    }
+    return { status: 'failed', error: `HTTP ${response.status}` };
+  } catch (error: unknown) {
+    return { status: 'failed', error: (error as Error).message || 'Connection failed' };
+  }
+}
+
 app.post('/api/registries/verify', async (req: Request, res: Response) => {
   try {
     const { registry } = req.body;
@@ -2163,51 +2210,112 @@ app.post('/api/registries/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    const url = `https://${registry}/v2/`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Basic ${authData.auth}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    const sendResult = (result: { registry: string; status: string; error?: string }) => {
-      registryVerificationCache[result.registry] = { status: result.status, error: result.error };
-      res.json(result);
-    };
-
-    if (response.ok || response.status === 200) {
-      sendResult({ registry, status: 'authenticated' });
-      return;
-    }
-
-    if (response.status === 401) {
-      const wwwAuth = response.headers.get('www-authenticate') || '';
-      const realmMatch = wwwAuth.match(/realm="([^"]+)"/);
-      const serviceMatch = wwwAuth.match(/service="([^"]+)"/);
-
-      if (realmMatch) {
-        const tokenUrl = new URL(realmMatch[1]);
-        if (serviceMatch) tokenUrl.searchParams.set('service', serviceMatch[1]);
-        const tokenRes = await fetch(tokenUrl.toString(), {
-          headers: { 'Authorization': `Basic ${authData.auth}` },
-          signal: AbortSignal.timeout(10000),
-        });
-        if (tokenRes.ok) {
-          sendResult({ registry, status: 'authenticated' });
-          return;
-        }
-        const body = await tokenRes.text().catch(() => '');
-        sendResult({ registry, status: 'failed', error: `Authentication failed (${tokenRes.status}): ${body.slice(0, 200)}` });
-        return;
-      }
-    }
-
-    sendResult({ registry, status: 'failed', error: `HTTP ${response.status}` });
+    const result = await verifyRegistryAuth(registry, authData.auth);
+    registryVerificationCache[registry] = result;
+    res.json({ registry, ...result });
   } catch (error: unknown) {
     console.error(`Error verifying registry ${req.body?.registry}:`, error);
     const reg = req.body?.registry;
     const errMsg = (error as Error).message || 'Connection failed';
     if (reg) registryVerificationCache[reg] = { status: 'failed', error: errMsg };
     res.json({ registry: reg, status: 'failed', error: errMsg });
+  }
+});
+
+const destinationCredentialStatus: Record<string, { status: 'authenticated' | 'failed'; error?: string }> = {};
+
+function destinationCredentialsExternalMessage(filePath: string): string {
+  return `Destination registry credentials are managed outside the application at ${filePath} and cannot be changed here.`;
+}
+
+app.get('/api/registry-credentials', async (_req: Request, res: Response) => {
+  const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+  const base = { managedExternally: location.managedExternally, path: location.managedExternally ? location.path : null };
+  try {
+    const file = await readAuthFile(location.path, 'Destination registry credentials', true);
+    const credentials = listCredentials(file).map((entry) => ({
+      ...entry,
+      status: destinationCredentialStatus[entry.registry]?.status ?? 'not_verified',
+      ...(destinationCredentialStatus[entry.registry]?.error
+        ? { error: destinationCredentialStatus[entry.registry].error }
+        : {}),
+    }));
+    res.json({ ...base, credentials });
+  } catch (error: unknown) {
+    if (error instanceof AuthFileError) {
+      res.json({ ...base, credentials: [], error: error.message });
+      return;
+    }
+    console.error('Error reading destination registry credentials:', error);
+    res.status(500).json({ error: 'Failed to read destination registry credentials' });
+  }
+});
+
+app.put('/api/registry-credentials', async (req: Request, res: Response) => {
+  const { registry, username, password } = req.body || {};
+  if (typeof registry !== 'string' || !isValidRegistryHost(registry)) {
+    return res.status(400).json({ error: 'registry must be a hostname with an optional port, like registry.example.com:5000' });
+  }
+  if (typeof username !== 'string' || !username || username.includes(':')) {
+    return res.status(400).json({ error: 'username is required and must not contain ":"' });
+  }
+  if (typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'password is required' });
+  }
+
+  const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+  if (location.managedExternally) {
+    return res.status(409).json({ error: destinationCredentialsExternalMessage(location.path) });
+  }
+  try {
+    await upsertCredential(location.path, registry, username, password);
+    delete destinationCredentialStatus[registry];
+    res.json({ message: 'Registry credentials saved' });
+  } catch (error: unknown) {
+    console.error('Error saving destination registry credentials:', error);
+    const message = error instanceof AuthFileError ? error.message : 'Failed to save registry credentials';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.delete('/api/registry-credentials/:registry', async (req: Request, res: Response) => {
+  const { registry } = req.params;
+  const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+  if (location.managedExternally) {
+    return res.status(409).json({ error: destinationCredentialsExternalMessage(location.path) });
+  }
+  try {
+    const removed = await removeCredential(location.path, registry);
+    if (!removed) {
+      return res.status(404).json({ error: 'No credentials found for this registry' });
+    }
+    delete destinationCredentialStatus[registry];
+    res.json({ message: 'Registry credentials removed' });
+  } catch (error: unknown) {
+    console.error('Error removing destination registry credentials:', error);
+    const message = error instanceof AuthFileError ? error.message : 'Failed to remove registry credentials';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/registry-credentials/verify', async (req: Request, res: Response) => {
+  const { registry } = req.body || {};
+  if (typeof registry !== 'string' || !registry) {
+    return res.status(400).json({ error: 'Registry is required' });
+  }
+  try {
+    const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+    const file = await readAuthFile(location.path, 'Destination registry credentials', true);
+    const auth = file.auths[registry]?.auth;
+    if (!auth) {
+      return res.json({ registry, status: 'failed', error: 'No credentials found for this registry' });
+    }
+    const result = await verifyRegistryAuth(registry, auth);
+    destinationCredentialStatus[registry] = result;
+    res.json({ registry, ...result });
+  } catch (error: unknown) {
+    const message = error instanceof AuthFileError ? error.message : (error as Error).message;
+    res.json({ registry, status: 'failed', error: message });
   }
 });
 
