@@ -614,6 +614,14 @@ Start a new mirror operation.
   - If not provided or empty, defaults to `default`
   - Must be alphanumeric with dashes and underscores only (no slashes or special characters)
   - Examples: `default`, `odf`, `production`, `test-123`
+- `mode` (string, optional): `mirrorToDisk` (default), `mirrorToMirror`, or `diskToMirror`.
+- `destinationRegistry` (string, required for `mirrorToMirror` and `diskToMirror`): `host[:port]` with an optional lowercase namespace path, for example `registry.example.com:5000/ocp`. Do not include `docker://`, a tag, or a digest. Rejected for `mirrorToDisk`.
+- `skipDestTlsVerify` (boolean, optional, `mirrorToMirror`/`diskToMirror` only): passes `--dest-tls-verify=false`. Defaults to verifying TLS.
+- `optionalFlags.maxNestedPaths` (positive integer, `mirrorToMirror`/`diskToMirror` only): passes `--max-nested-paths`.
+
+The meaning of `mirrorDestinationSubdir` depends on the mode: the archive output folder for `mirrorToDisk`, the `--workspace` folder for `mirrorToMirror` (created if missing), and the `--from` archive source for `diskToMirror` (must exist and contain `mirror_*.tar`; `404` when missing, `400` when it has no archives). A start returns `409` when a running operation uses the same folder and either operation is `mirrorToMirror` or `diskToMirror`.
+
+For registry-target modes the server merges the pull secret with the destination registry credentials (destination entries win for the same host) into a temporary `0600` authfile that is deleted when the operation ends. A malformed pull secret or credentials file returns `500` naming the file.
 
 **Response:**
 ```json
@@ -682,6 +690,9 @@ Get detailed information about a specific operation.
 **Response Fields:**
 - `mirrorDestination`: The full container path where mirror files are saved (e.g., `/app/data/mirrors/default`)
 - Host path is `{project-root}/data/mirrors/{subdirectory}/` where `{project-root}` is typically the application directory
+- `mode`: The operation mode (`mirrorToDisk` for records created before modes existed)
+- `destinationRegistry`: Present for `mirrorToMirror` and `diskToMirror`
+- `clusterResourcesPath`: For `mirrorToMirror` and `diskToMirror`, the folder holding the generated IDMS, ITMS, and CatalogSource manifests (`<folder>/working-dir/cluster-resources`)
 
 #### GET /api/operations/:id/logs
 Get operation logs.
