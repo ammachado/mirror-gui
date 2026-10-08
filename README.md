@@ -98,6 +98,18 @@ helm upgrade --install mirror-gui charts/mirror-gui \
 
 `mirror-gui.sh` forwards `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` (either case) from the host environment to the container when they are set. Proxy authentication goes in the proxy URL, so treat a value containing credentials as a secret. Custom CA bundles for TLS-intercepting proxies are not supported yet.
 
+Mirror-to-mirror and disk-to-mirror push to a destination registry. Its credentials can be managed in **Settings > Registry**, or supplied from a Secret holding a container auth file (the `auth.json` format used by `podman login`). A Secret makes the Settings form read-only:
+
+```bash
+oc -n mirror-gui create secret generic mirror-gui-registry-credentials \
+  --from-file=auth.json=/secure/path/auth.json
+
+helm upgrade --install mirror-gui charts/mirror-gui \
+  --set registryCredentials.existingSecret=mirror-gui-registry-credentials
+```
+
+oc-mirror only trusts the system certificate store. A destination registry signed by a private CA needs **Skip TLS verification for destination** when starting the operation.
+
 `helm uninstall` deletes both PVCs and everything in them. Set `persistence.retain=true` (and `cachePersistence.retain=true` for the cache) to keep a claim instead. Helm leaves a retained claim in place, and a later install under the same release name and namespace adopts it again, data included. Delete a retained claim you no longer need by hand:
 
 ```bash
