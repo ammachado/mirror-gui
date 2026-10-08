@@ -293,3 +293,25 @@ export function normalizeChannels(
 
   return channelObjects;
 }
+
+let warnedInvalidArtifactOverride = false;
+
+/**
+ * Artifact downloads are meant for cluster deployments, where mirror output lives
+ * on a PVC the user cannot reach directly. MIRROR_GUI_ARTIFACT_DOWNLOADS ("true" or
+ * "false") overrides auto-detection via KUBERNETES_SERVICE_HOST, which Kubernetes
+ * and OpenShift inject into every pod.
+ */
+export function isArtifactDownloadEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const rawOverride = env.MIRROR_GUI_ARTIFACT_DOWNLOADS;
+  const override = rawOverride?.trim().toLowerCase();
+  if (override === 'true') return true;
+  if (override === 'false') return false;
+  if (override && !warnedInvalidArtifactOverride) {
+    warnedInvalidArtifactOverride = true;
+    console.warn(
+      `Ignoring invalid MIRROR_GUI_ARTIFACT_DOWNLOADS value "${rawOverride}"; expected "true" or "false"`,
+    );
+  }
+  return Boolean(env.KUBERNETES_SERVICE_HOST?.trim());
+}

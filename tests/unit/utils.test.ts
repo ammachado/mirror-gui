@@ -10,6 +10,7 @@ import {
   extractVersionInfo,
   normalizeChannels,
   getVersionsFromMetadata,
+  isArtifactDownloadEnabled,
 } from '../../server/utils.js';
 
 describe('parseOcMirrorVersion', () => {
@@ -269,5 +270,38 @@ describe('getVersionsFromMetadata', () => {
     });
     expect(result).toContain('2.16.0');
     expect(result).toContain('2.15.0');
+  });
+});
+
+describe('isArtifactDownloadEnabled', () => {
+  it('is disabled for a local run with no cluster env, so podman users see no change', () => {
+    expect(isArtifactDownloadEnabled({})).toBe(false);
+  });
+
+  it('is enabled inside a pod, where Kubernetes injects KUBERNETES_SERVICE_HOST', () => {
+    expect(isArtifactDownloadEnabled({ KUBERNETES_SERVICE_HOST: '172.30.0.1' })).toBe(true);
+  });
+
+  it('lets an admin disable it in a cluster with the override', () => {
+    expect(isArtifactDownloadEnabled({
+      KUBERNETES_SERVICE_HOST: '172.30.0.1',
+      MIRROR_GUI_ARTIFACT_DOWNLOADS: 'false',
+    })).toBe(false);
+  });
+
+  it('lets a developer enable it locally with the override (case-insensitive, trimmed)', () => {
+    expect(isArtifactDownloadEnabled({ MIRROR_GUI_ARTIFACT_DOWNLOADS: ' TRUE ' })).toBe(true);
+  });
+
+  it('falls back to auto-detection for an invalid override value', () => {
+    expect(isArtifactDownloadEnabled({ MIRROR_GUI_ARTIFACT_DOWNLOADS: 'yes' })).toBe(false);
+    expect(isArtifactDownloadEnabled({
+      MIRROR_GUI_ARTIFACT_DOWNLOADS: 'yes',
+      KUBERNETES_SERVICE_HOST: '172.30.0.1',
+    })).toBe(true);
+  });
+
+  it('treats an empty KUBERNETES_SERVICE_HOST as not in a cluster', () => {
+    expect(isArtifactDownloadEnabled({ KUBERNETES_SERVICE_HOST: '  ' })).toBe(false);
   });
 });

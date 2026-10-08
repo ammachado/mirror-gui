@@ -32,6 +32,23 @@ describe('System API', () => {
       expect(typeof res.body.availableDiskSpace).toBe('number');
       expect(typeof res.body.totalDiskSpace).toBe('number');
     });
+
+    it('reports artifactDownloadsEnabled from the override so the UI can show downloads', async () => {
+      const original = process.env.MIRROR_GUI_ARTIFACT_DOWNLOADS;
+      try {
+        process.env.MIRROR_GUI_ARTIFACT_DOWNLOADS = 'true';
+        const enabled = await request.get('/api/system/info');
+        expect(enabled.status).toBe(200);
+        expect(enabled.body.artifactDownloadsEnabled).toBe(true);
+
+        process.env.MIRROR_GUI_ARTIFACT_DOWNLOADS = 'false';
+        const disabled = await request.get('/api/system/info');
+        expect(disabled.body.artifactDownloadsEnabled).toBe(false);
+      } finally {
+        if (original === undefined) delete process.env.MIRROR_GUI_ARTIFACT_DOWNLOADS;
+        else process.env.MIRROR_GUI_ARTIFACT_DOWNLOADS = original;
+      }
+    });
   });
 
   describe('GET /api/system/status', () => {
