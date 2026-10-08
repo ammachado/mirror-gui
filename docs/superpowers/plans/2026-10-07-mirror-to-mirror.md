@@ -2837,6 +2837,20 @@ describe('Same-origin API access', () => {
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 
+  // A cross-site page can still send "simple" requests (text/plain or form bodies) without a
+  // preflight. The server only parses application/json, so such a request must not start anything.
+  it('ignores a cross-site simple POST that tries to start a mirror-to-mirror push', async () => {
+    const before = (await request.get('/api/operations')).body.length;
+    const res = await request
+      .post('/api/operations/start')
+      .set('Origin', 'https://evil.example')
+      .set('Content-Type', 'text/plain')
+      .send(JSON.stringify({ configFile: 'any.yaml', mode: 'mirrorToMirror', destinationRegistry: 'evil.example/loot' }));
+    expect(res.status).not.toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    expect((await request.get('/api/operations')).body.length).toBe(before);
+  });
+
   it('still serves same-origin requests normally', async () => {
     const res = await request.get('/api/health');
     expect(res.status).toBe(200);
@@ -2847,7 +2861,7 @@ describe('Same-origin API access', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run tests/integration/sameOrigin.test.ts`
-Expected: FAIL on the first two cases (`access-control-allow-origin` is `*`).
+Expected: FAIL on the first three cases (`access-control-allow-origin` is `*`). The simple-POST case already returns a non-200 status today; it fails only on the header assertion, and it pins that the JSON-only body parsing keeps blocking it.
 
 - [ ] **Step 3: Remove CORS from the server**
 
