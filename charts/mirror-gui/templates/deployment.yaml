@@ -48,6 +48,10 @@ spec:
             - name: OC_MIRROR_AUTHFILE
               value: /app/pull-secret/{{ (.Values.pullSecret).key }}
             {{- end }}
+            {{- if (.Values.registryCredentials).existingSecret }}
+            - name: OC_MIRROR_REGISTRY_CREDENTIALS
+              value: /app/registry-credentials/{{ (.Values.registryCredentials).key }}
+            {{- end }}
             {{- if or (.Values.proxy).httpProxy (.Values.proxy).httpsProxy }}
             {{- /* Both cases are set because Go tools (oc-mirror, oc) and Node read different ones.
                    NODE_USE_ENV_PROXY makes Node's built-in fetch honor them. */}}
@@ -101,6 +105,11 @@ spec:
               mountPath: /app/pull-secret
               readOnly: true
             {{- end }}
+            {{- if (.Values.registryCredentials).existingSecret }}
+            - name: registry-credentials
+              mountPath: /app/registry-credentials
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           {{- if (.Values.persistence).enabled }}
@@ -123,4 +132,12 @@ spec:
             items:
               - key: {{ (.Values.pullSecret).key }}
                 path: {{ (.Values.pullSecret).key }}
+        {{- end }}
+        {{- if (.Values.registryCredentials).existingSecret }}
+        - name: registry-credentials
+          secret:
+            secretName: {{ (.Values.registryCredentials).existingSecret }}
+            items:
+              - key: {{ (.Values.registryCredentials).key }}
+                path: {{ (.Values.registryCredentials).key }}
         {{- end }}
