@@ -37,6 +37,13 @@ pullSecret:
   existingSecret: ""
   key: pull-secret.json
 
+# Optional Secret holding a container auth file (auth.json format) with credentials for the
+# registries that mirror-to-mirror and disk-to-mirror push to. When set, the Settings form
+# for destination credentials is read-only.
+registryCredentials:
+  existingSecret: ""
+  key: auth.json
+
 # Outbound proxy for reaching registries (oc-mirror, catalog sync, registry verification).
 # Leave httpProxy and httpsProxy empty for a direct connection. noProxy is only rendered
 # when a proxy is set; add the registry hosts and cluster ranges the proxy must not carry.
