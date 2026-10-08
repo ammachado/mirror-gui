@@ -165,7 +165,10 @@ describe('Operation modes', () => {
     expect(authfile).toBe(path.join(runDir, `authfile-${res.body.operationId}.json`));
     const merged = JSON.parse(await fs.promises.readFile(authCopy, 'utf8'));
     expect(merged.auths['registry.redhat.io'].auth).toBe(b64('rh:pw'));
-    expect(merged.auths['reg.example.com:5000'].auth).toBe(b64('new:new'));
+    // The pull secret also has this host, so the destination credentials are
+    // scoped to the destination path and pulls from the host keep the pull secret.
+    expect(merged.auths['reg.example.com:5000/ocp'].auth).toBe(b64('new:new'));
+    expect(merged.auths['reg.example.com:5000'].auth).toBe(b64('old:old'));
 
     const op = await waitForCompletion(res.body.operationId);
     expect(op.mode).toBe('mirrorToMirror');

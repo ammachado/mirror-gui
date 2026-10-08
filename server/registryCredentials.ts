@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { getRegistryHost } from './operationModes.js';
 
 const fsp = fs.promises;
 
@@ -110,7 +111,24 @@ export async function removeCredential(filePath: string, registry: string): Prom
   return true;
 }
 
-/** Destination credentials win over pull secret entries for the same host. */
-export function mergeAuthFiles(pullSecret: AuthFile, destination: AuthFile): AuthFile {
-  return { auths: { ...pullSecret.auths, ...destination.auths } };
+/**
+ * Destination credentials win over pull secret entries for the same host.
+ *
+ * Exception: when the destination has a namespace and the pull secret also
+ * has its host, the destination credentials are keyed by the full destination
+ * path instead. oc-mirror uses one authfile for both pulling and pushing, and
+ * auth lookup picks the most specific key, so pushes get the destination
+ * credentials while source pulls from the same host keep the pull secret.
+ */
+export function mergeAuthFiles(pullSecret: AuthFile, destination: AuthFile, destinationRegistry?: string): AuthFile {
+  const merged: AuthFile = { auths: { ...pullSecret.auths, ...destination.auths } };
+  if (!destinationRegistry) {
+    return merged;
+  }
+  const host = getRegistryHost(destinationRegistry);
+  if (destinationRegistry !== host && pullSecret.auths[host] && destination.auths[host]) {
+    merged.auths[host] = pullSecret.auths[host];
+    merged.auths[destinationRegistry] = destination.auths[host];
+  }
+  return merged;
 }

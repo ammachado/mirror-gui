@@ -1826,7 +1826,7 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
           readAuthFile(AUTHFILE_PATH, 'Pull secret', false),
           readAuthFile(credentialsLocation.path, 'Destination registry credentials', true),
         ]);
-        mergedAuth = mergeAuthFiles(pullSecretAuth, destinationAuth);
+        mergedAuth = mergeAuthFiles(pullSecretAuth, destinationAuth, destinationRegistry);
       } catch (error: unknown) {
         if (error instanceof AuthFileError) {
           return res.status(500).json({ error: error.message });
