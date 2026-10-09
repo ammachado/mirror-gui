@@ -147,10 +147,14 @@ COPY --from=builder /app/catalog-data-minimal ./catalog-data
 
 # OpenShift assigns an arbitrary UID with GID 0, so anything the runtime writes must be
 # group-owned by root and group-writable. /app itself stays root-owned so the runtime cannot
-# replace its own code; everything it writes goes under /app/data or TMPDIR.
-RUN mkdir -p /app/data && \
-    chgrp -R 0 /app/data && \
-    chmod -R g=u /app/data
+# replace its own code; everything it writes goes under /app/data, /app/cache or TMPDIR.
+# /app/cache is the oc-mirror --cache-dir mount point, kept apart from /app/data so it can be
+# backed by its own volume.
+RUN mkdir -p /app/data /app/cache && \
+    chgrp -R 0 /app/data /app/cache && \
+    chmod -R g=u /app/data /app/cache
+
+ENV OC_MIRROR_CACHE_DIR=/app/cache
 
 LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.version="${VERSION}" \

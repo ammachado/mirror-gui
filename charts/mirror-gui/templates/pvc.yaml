@@ -26,3 +26,30 @@ spec:
   storageClassName: {{ . | quote }}
   {{- end }}
 {{- end }}
+{{- if (.Values.cachePersistence).enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mirror-gui.fullname" . }}-cache
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mirror-gui.labels" . | nindent 4 }}
+  {{- if or (.Values.cachePersistence).retain .Values.annotations }}
+  annotations:
+    {{- if (.Values.cachePersistence).retain }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with .Values.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ (.Values.cachePersistence).size }}
+  {{- with (.Values.cachePersistence).storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
