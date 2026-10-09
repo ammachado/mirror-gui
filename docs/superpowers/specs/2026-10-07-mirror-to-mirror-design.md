@@ -115,7 +115,7 @@ For M2M and D2M, the server builds a temporary authfile before spawning:
 
 1. Read the pull secret `auths`. A missing or empty pull secret contributes no entries (D2M does not need it, and today's start route does not require it either); a malformed one fails the start with 500.
 2. Read the destination credentials `auths`.
-3. Merge; on a host present in both, the destination credentials entry wins.
+3. Merge; on a host present in both, the destination credentials entry wins. Exception: when the destination has a namespace (`quay.io/myorg`) and the pull secret also has its host, the destination entry is keyed by the full destination path and the pull secret keeps the host key. oc-mirror uses one authfile for pulling and pushing, and auth lookup picks the most specific key, so source pulls from the same host keep working.
 4. Write to `RUN_DIR/authfile-<operationId>.json` with mode `0600`.
 
 The file is removed on process `close`, on process `error`, and when spawning or any step after writing it throws. The stop endpoint relies on the `close` handler. The temporary path is never included in API responses or operation records. M2D keeps passing the pull secret path directly.
@@ -190,7 +190,7 @@ When `existingSecret` is set, the chart mounts the key read-only and sets `OC_MI
 - `buildOcMirrorArgs`: assert the full argv array for each mode, including the `--workspace` and `--from` placement, `docker://` prefixing, `--dest-tls-verify` true/false, and appended optional flags. Full-array assertions make a dropped or reordered flag fail.
 - Optional flags: `maxNestedPaths` accepted for M2M and D2M, rejected for M2D, rejected for 0, negatives, and non-integers.
 - `destinationRegistry` validation: accepted and rejected examples for each rule above.
-- `registryCredentials`: merge precedence (destination entry replaces the pull secret entry for the same host and keeps other pull secret hosts); list output contains no `auth` or password; malformed files raise errors; writes produce mode `0600`; external mode rejects writes.
+- `registryCredentials`: merge precedence (destination entry replaces the pull secret entry for the same host and keeps other pull secret hosts; a namespaced destination whose host is also in the pull secret is keyed by its full path instead); list output contains no `auth` or password; malformed files raise errors; writes produce mode `0600`; external mode rejects writes.
 
 **Integration tests** (Vitest with the existing server harness)
 
