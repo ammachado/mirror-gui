@@ -51,7 +51,9 @@ assert_contains 'image: "registry.ci.openshift.org/ocp/5.0:mirror-gui"'
 assert_contains 'readOnlyRootFilesystem: true'
 assert_contains 'allowPrivilegeEscalation: false'
 assert_contains 'runAsNonRoot: true'
-assert_contains 'fsGroup: 0'
+# restricted-v2 rejects an explicit fsGroup of 0, so the pod would never schedule; OpenShift
+# injects one from the namespace range instead.
+assert_absent 'fsGroup: 0'
 assert_contains 'drop: [ALL]'
 assert_contains 'type: RuntimeDefault'
 assert_contains 'startupProbe:'
