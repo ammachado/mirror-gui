@@ -1755,7 +1755,6 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: APP_ROOT_DIR,
-      shell: process.platform === 'win32',
     });
 
     runningProcesses.set(operationId, {
