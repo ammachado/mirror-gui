@@ -2097,13 +2097,13 @@ app.get('/api/registries', async (_req: Request, res: Response) => {
     }
     const content = await fsp.readFile(pullSecretPath, 'utf8');
     const pullSecret = JSON.parse(content);
-    const auths = pullSecret.auths || {};
+    const auths: Record<string, Record<string, string>> = pullSecret.auths || {};
 
     const nonRegistryHosts = ['cloud.openshift.com', 'sso.redhat.com'];
 
     const registries = Object.entries(auths)
       .filter(([registry]) => !nonRegistryHosts.includes(registry))
-      .map(([registry, authData]: [string, Record<string, string>]) => {
+      .map(([registry, authData]) => {
         let username = '';
         if (authData.auth) {
           try {
