@@ -84,7 +84,7 @@ helm upgrade --install mirror-gui charts/mirror-gui \
   --set pullSecret.existingSecret=mirror-gui-pull-secret
 ```
 
-Choose the PVC size and storage class for your cluster. Setting `persistence.enabled=false` makes all data ephemeral. The chart disables its OpenShift Route by default. Setting `route.enabled=true` exposes an unauthenticated administrative interface that must be protected by cluster access controls.
+Choose the PVC size and storage class for your cluster. Setting `persistence.enabled=false` makes all data ephemeral. The oc-mirror cache (`--cache-dir`) lives on a second PVC (`mirror-gui-cache` for the release above), mounted at `/app/cache` and configured with `cachePersistence.size`, `cachePersistence.storageClass`, and `cachePersistence.retain`. Setting `cachePersistence.enabled=false` replaces it with an `emptyDir`, so each pod restart starts with an empty cache. The chart disables its OpenShift Route by default. Setting `route.enabled=true` exposes an unauthenticated administrative interface that must be protected by cluster access controls.
 
 Behind a corporate proxy, set the outbound proxy so `oc-mirror`, catalog sync, and registry verification can reach the registries. `noProxy` is a comma-separated list; include your internal registry hosts and cluster ranges:
 

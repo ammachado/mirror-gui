@@ -42,6 +42,15 @@ assert_data_volume_empty_dir() {
     END { exit found ? 0 : 1 }
   ' "$render" || { echo "data volume must be an emptyDir" >&2; exit 1; }
 }
+assert_cache_volume() {
+  awk -v want="$1" '
+    /^      volumes:$/ { volumes = 1; next }
+    volumes && /^        - name: cache$/ { cache_volume = 1; next }
+    cache_volume && /^        - name:/ { exit 1 }
+    cache_volume && index($0, want) { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$render" || { echo "cache volume must contain: $1" >&2; exit 1; }
+}
 
 helm template test "$chart_dir" >"$render"
 assert_contains 'kind: Deployment'
@@ -67,6 +76,11 @@ assert_contains 'sizeLimit: 8Gi'
 assert_absent 'helm.sh/resource-policy: keep'
 assert_contains 'mountPath: /app/data'
 assert_contains 'mountPath: /tmp'
+# oc-mirror's cache gets its own claim so it can be sized and placed apart from mirrored content.
+assert_contains 'mountPath: /app/cache'
+assert_contains 'value: /app/cache'
+assert_contains 'name: test-cache'
+assert_cache_volume 'claimName: test-cache'
 assert_contains 'name: TMPDIR'
 assert_contains 'value: /tmp'
 assert_contains 'kind: Service'
@@ -78,9 +92,20 @@ assert_absent 'storageClassName:'
 helm template test "$chart_dir" --set persistence.storageClass=fast >"$render"
 assert_contains 'storageClassName: "fast"'
 
-helm template test "$chart_dir" --set persistence.enabled=false >"$render"
+helm template test "$chart_dir" --set cachePersistence.storageClass=cache-tier --set cachePersistence.size=7Gi >"$render"
+assert_contains 'storageClassName: "cache-tier"'
+assert_contains 'storage: 7Gi'
+
+helm template test "$chart_dir" --set persistence.enabled=false --set cachePersistence.enabled=false >"$render"
 assert_absent 'kind: PersistentVolumeClaim'
 assert_data_volume_empty_dir
+assert_cache_volume 'emptyDir: {}'
+assert_contains 'mountPath: /app/cache'
+
+# Each claim is toggled on its own: dropping the data claim must keep the cache claim.
+helm template test "$chart_dir" --set persistence.enabled=false >"$render"
+assert_data_volume_empty_dir
+assert_cache_volume 'claimName: test-cache'
 
 helm template test "$chart_dir" --set pullSecret.existingSecret=registry-auth --set pullSecret.key=.dockerconfigjson >"$render"
 assert_contains 'secretName: registry-auth'
@@ -111,6 +136,9 @@ assert_contains 'app.kubernetes.io/name: mirror-gui'
 helm template test "$chart_dir" --set persistence.retain=true >"$render"
 assert_contains 'helm.sh/resource-policy: keep'
 
+helm template test "$chart_dir" --set cachePersistence.retain=true >"$render"
+[ "$(grep -Fc 'helm.sh/resource-policy: keep' "$render")" -eq 1 ] || { echo "only the cache claim should be kept" >&2; exit 1; }
+
 helm template test "$chart_dir" --set resources=null --set tmpDir.sizeLimit= >"$render"
 assert_absent 'cpu: 500m'
 assert_absent 'sizeLimit:'
@@ -118,13 +146,14 @@ assert_contains 'emptyDir: {}'
 
 # Nulling a whole values sub-map is the usual way to unset a block, and it must not abort
 # the render the way a bare `.Values.tmpDir.sizeLimit` lookup would.
-helm template test "$chart_dir" --set tmpDir=null --set persistence=null --set pullSecret=null --set route=null >"$render"
+helm template test "$chart_dir" --set tmpDir=null --set persistence=null --set cachePersistence=null --set pullSecret=null --set route=null >"$render"
 assert_contains 'kind: Deployment'
 assert_absent 'sizeLimit:'
 assert_absent 'kind: PersistentVolumeClaim'
 assert_absent 'kind: Route'
 assert_absent 'mountPath: /app/pull-secret'
 assert_data_volume_empty_dir
+assert_cache_volume 'emptyDir: {}'
 
 grep -Fq 'Route access is unauthenticated' "$chart_dir/templates/NOTES.txt"
 grep -Fq 'oc create namespace mirror-gui' README.md

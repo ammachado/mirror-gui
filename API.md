@@ -858,7 +858,7 @@ Delete all files in the cache directory.
 ```
 
 **Notes:**
-- The cache directory is set via the `OC_MIRROR_CACHE_DIR` environment variable (default: `/app/data/cache`)
+- The cache directory is set via the `OC_MIRROR_CACHE_DIR` environment variable (`/app/data/cache` under `mirror-gui.sh`; `/app/cache`, its own volume, in the container image and Helm chart)
 - To override, set `CACHE_DIR` when starting the app: `CACHE_DIR=/tmp/cache ./mirror-gui.sh`
 
 ### Catalog Sync

@@ -39,7 +39,7 @@ spec:
             - name: STORAGE_DIR
               value: /app/data
             - name: OC_MIRROR_CACHE_DIR
-              value: /app/data/cache
+              value: /app/cache
             - name: OC_MIRROR_BASE_MIRROR_DIR
               value: /app/data/mirrors
             - name: TMPDIR
@@ -94,6 +94,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            - name: cache
+              mountPath: /app/cache
             - name: tmp
               mountPath: /tmp
             {{- if (.Values.pullSecret).existingSecret }}
@@ -106,6 +108,13 @@ spec:
           {{- if (.Values.persistence).enabled }}
           persistentVolumeClaim:
             claimName: {{ include "mirror-gui.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: cache
+          {{- if (.Values.cachePersistence).enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "mirror-gui.fullname" . }}-cache
           {{- else }}
           emptyDir: {}
           {{- end }}

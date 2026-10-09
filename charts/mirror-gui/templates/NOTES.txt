@@ -19,3 +19,10 @@ The data claim is retained on uninstall, so reinstalling under this release name
 you remove it:
   oc -n {{ .Release.Namespace }} delete pvc {{ include "mirror-gui.fullname" . }}
 {{- end }}
+
+{{- if and (.Values.cachePersistence).enabled (.Values.cachePersistence).retain }}
+
+The oc-mirror cache claim is retained on uninstall, so reinstalling under this release name
+fails until you remove it:
+  oc -n {{ .Release.Namespace }} delete pvc {{ include "mirror-gui.fullname" . }}-cache
+{{- end }}
