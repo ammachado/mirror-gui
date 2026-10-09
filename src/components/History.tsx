@@ -47,6 +47,7 @@ import {
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { useAlerts } from '../AlertContext';
+import OperationArtifacts from './OperationArtifacts';
 
 interface Operation {
   id: string;
@@ -87,6 +88,7 @@ const History: React.FC = () => {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [deleteModalTarget, setDeleteModalTarget] = useState<'selected' | 'all' | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [artifactDownloadsEnabled, setArtifactDownloadsEnabled] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -104,6 +106,12 @@ const History: React.FC = () => {
   useEffect(() => {
     fetchHistory();
   }, [fetchHistory]);
+
+  useEffect(() => {
+    axios.get('/api/system/info')
+      .then(res => setArtifactDownloadsEnabled(res.data.artifactDownloadsEnabled === true))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!selectedOperation) return;
@@ -429,6 +437,10 @@ const History: React.FC = () => {
                 </DescriptionListGroup>
               </DescriptionList>
             </div>
+          )}
+
+          {artifactDownloadsEnabled && selectedOperation.status === 'success' && (
+            <OperationArtifacts operationId={selectedOperation.id} formatFileSize={formatFileSize} />
           )}
 
           <div className="pf-v6-u-mt-lg">

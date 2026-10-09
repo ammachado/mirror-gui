@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page, Route } from '@playwright/test';
 import { MINIMAL_ISC_YAML } from '../helpers/minimalConfig.js';
 import { seedOperation } from '../helpers/seedOperation.js';
 import {
@@ -140,5 +140,106 @@ test.describe('History - Row Selection & Bulk Delete Selected', () => {
     const table = page.locator('table');
     await expect(table).toBeVisible({ timeout: 15000 });
     await assertSelectAllDeleteRemovesAll(page, table, page, createdConfigs.slice(1), 'Confirm deletion', page);
+  });
+});
+
+// Artifact downloads in the History details panel. All API calls are mocked so the
+// tests do not depend on a real oc-mirror run or on running inside a cluster.
+test.describe('History - Artifact downloads', () => {
+  const now = Date.now();
+  const successOp = {
+    id: 'op-art-success',
+    name: 'artifact-success-op',
+    configFile: 'artifact-config.yaml',
+    status: 'success',
+    startedAt: new Date(now - 3600000).toISOString(),
+    completedAt: new Date(now - 3000000).toISOString(),
+    duration: 600,
+  };
+  const failedOp = {
+    ...successOp,
+    id: 'op-art-failed',
+    name: 'artifact-failed-op',
+    status: 'failed',
+    errorMessage: 'boom',
+  };
+  const listing = {
+    mirrorDestination: '/app/data/mirrors/default',
+    artifacts: [
+      { name: 'mirror_000001.tar', size: 5368709120, modifiedAt: new Date(now - 3000000).toISOString() },
+    ],
+  };
+
+  async function mockApis(
+    page: Page,
+    options: { enabled: boolean; artifacts?: (route: Route) => Promise<void> },
+  ) {
+    const json = (route: Route, body: unknown) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+
+    await page.route('**/api/operations/history', route => json(route, [successOp, failedOp]));
+    await page.route('**/api/system/info', route => json(route, { artifactDownloadsEnabled: options.enabled }));
+    await page.route('**/api/operations/*/details', route => json(route, {}));
+    await page.route('**/api/operations/*/logs', route => json(route, { logs: '' }));
+    await page.route('**/api/operations/*/artifacts', options.artifacts ?? (route => json(route, listing)));
+  }
+
+  async function openDetails(page: Page, opName: string) {
+    await page.goto('/history');
+    await page.getByText(opName).click();
+    await expect(page.getByRole('heading', { name: /Log Output/ })).toBeVisible({ timeout: 15000 });
+  }
+
+  test('lists artifacts with browser download links for a successful operation', async ({ page }) => {
+    await mockApis(page, { enabled: true });
+    await openDetails(page, successOp.name);
+
+    await expect(page.getByRole('heading', { name: 'Artifacts' })).toBeVisible();
+    await expect(page.getByText('/app/data/mirrors/default')).toBeVisible();
+    await expect(page.getByText(/may also contain archives from other operations/)).toBeVisible();
+
+    const link = page.getByRole('link', { name: 'Download mirror_000001.tar' });
+    await expect(link).toHaveAttribute('href', '/api/operations/op-art-success/artifacts/mirror_000001.tar');
+    await expect(link).toHaveAttribute('download', 'mirror_000001.tar');
+    await expect(page.getByRole('grid', { name: 'Operation artifacts' }).getByText('5.00 GB')).toBeVisible();
+  });
+
+  test('hides the section when downloads are not enabled (local podman run)', async ({ page }) => {
+    await mockApis(page, { enabled: false });
+    await openDetails(page, successOp.name);
+    await expect(page.getByRole('heading', { name: 'Artifacts' })).toHaveCount(0);
+  });
+
+  test('hides the section for a failed operation even when enabled', async ({ page }) => {
+    await mockApis(page, { enabled: true });
+    await openDetails(page, failedOp.name);
+    await expect(page.getByRole('heading', { name: 'Artifacts' })).toHaveCount(0);
+  });
+
+  test('shows an empty state when the destination has no files', async ({ page }) => {
+    await mockApis(page, {
+      enabled: true,
+      artifacts: route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ mirrorDestination: listing.mirrorDestination, artifacts: [] }),
+      }),
+    });
+    await openDetails(page, successOp.name);
+    await expect(page.getByText('No artifacts found in the mirror destination.')).toBeVisible();
+  });
+
+  test('shows an inline error when the list cannot be loaded', async ({ page }) => {
+    await mockApis(page, {
+      enabled: true,
+      artifacts: route => route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Failed to list artifacts' }),
+      }),
+    });
+    await openDetails(page, successOp.name);
+    await expect(page.getByText('Could not load artifacts')).toBeVisible();
+    await expect(page.getByText('Failed to list artifacts')).toBeVisible();
   });
 });
