@@ -2332,6 +2332,18 @@ app.get('/api/registries', async (_req: Request, res: Response) => {
   }
 });
 
+// Node's codes for certificates it cannot verify (self-signed, private CA, expired, wrong name).
+const TLS_CERTIFICATE_ERROR_CODES = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
 // Registries like registry.redhat.io and quay.io reject Basic auth on /v2/ and expect the
 // OAuth2 token exchange advertised in WWW-Authenticate, so both steps are tried.
 async function verifyRegistryAuth(
@@ -2366,6 +2378,14 @@ async function verifyRegistryAuth(
     }
     return { status: 'failed', error: `HTTP ${response.status}` };
   } catch (error: unknown) {
+    const code = ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
+    if (code && TLS_CERTIFICATE_ERROR_CODES.has(code)) {
+      return {
+        status: 'failed',
+        error: `TLS certificate could not be verified (${code}), so the credentials were not checked. `
+          + 'Operations can still push to this registry with "Skip TLS verification".',
+      };
+    }
     return { status: 'failed', error: (error as Error).message || 'Connection failed' };
   }
 }
@@ -2402,7 +2422,9 @@ app.post('/api/registries/verify', async (req: Request, res: Response) => {
   }
 });
 
-const destinationCredentialStatus: Record<string, { status: 'authenticated' | 'failed'; error?: string }> = {};
+// Keyed by registry; `auth` records which credential was verified, so a result
+// is shown only while the stored credential is unchanged (Secret rotation).
+const destinationCredentialStatus: Record<string, { auth: string; status: 'authenticated' | 'failed'; error?: string }> = {};
 
 function destinationCredentialsExternalMessage(filePath: string): string {
   return `Destination registry credentials are managed outside the application at ${filePath} and cannot be changed here.`;
@@ -2413,13 +2435,17 @@ app.get('/api/registry-credentials', async (_req: Request, res: Response) => {
   const base = { managedExternally: location.managedExternally, path: location.managedExternally ? location.path : null };
   try {
     const file = await readAuthFile(location.path, 'Destination registry credentials', true);
-    const credentials = listCredentials(file).map((entry) => ({
-      ...entry,
-      status: destinationCredentialStatus[entry.registry]?.status ?? 'not_verified',
-      ...(destinationCredentialStatus[entry.registry]?.error
-        ? { error: destinationCredentialStatus[entry.registry].error }
-        : {}),
-    }));
+    const credentials = listCredentials(file).map((entry) => {
+      const cached = Object.hasOwn(destinationCredentialStatus, entry.registry)
+        ? destinationCredentialStatus[entry.registry]
+        : undefined;
+      const current = cached && cached.auth === file.auths[entry.registry].auth ? cached : undefined;
+      return {
+        ...entry,
+        status: current?.status ?? 'not_verified',
+        ...(current?.error ? { error: current.error } : {}),
+      };
+    });
     res.json({ ...base, credentials });
   } catch (error: unknown) {
     if (error instanceof AuthFileError) {
@@ -2453,8 +2479,10 @@ app.put('/api/registry-credentials', async (req: Request, res: Response) => {
     res.json({ message: 'Registry credentials saved' });
   } catch (error: unknown) {
     console.error('Error saving destination registry credentials:', error);
-    const message = error instanceof AuthFileError ? error.message : 'Failed to save registry credentials';
-    res.status(500).json({ error: message });
+    if (error instanceof AuthFileError) {
+      return res.status(409).json({ error: error.message });
+    }
+    res.status(500).json({ error: 'Failed to save registry credentials' });
   }
 });
 
@@ -2473,8 +2501,10 @@ app.delete('/api/registry-credentials/:registry', async (req: Request, res: Resp
     res.json({ message: 'Registry credentials removed' });
   } catch (error: unknown) {
     console.error('Error removing destination registry credentials:', error);
-    const message = error instanceof AuthFileError ? error.message : 'Failed to remove registry credentials';
-    res.status(500).json({ error: message });
+    if (error instanceof AuthFileError) {
+      return res.status(409).json({ error: error.message });
+    }
+    res.status(500).json({ error: 'Failed to remove registry credentials' });
   }
 });
 
@@ -2486,14 +2516,15 @@ app.post('/api/registry-credentials/verify', async (req: Request, res: Response)
   try {
     const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
     const file = await readAuthFile(location.path, 'Destination registry credentials', true);
-    const auth = file.auths[registry]?.auth;
+    const auth = Object.hasOwn(file.auths, registry) ? file.auths[registry].auth : undefined;
     if (!auth) {
       return res.json({ registry, status: 'failed', error: 'No credentials found for this registry' });
     }
     const result = await verifyRegistryAuth(registry, auth);
-    destinationCredentialStatus[registry] = result;
+    destinationCredentialStatus[registry] = { auth, ...result };
     res.json({ registry, ...result });
   } catch (error: unknown) {
+    console.error(`Error verifying destination registry ${registry}:`, error);
     const message = error instanceof AuthFileError ? error.message : (error as Error).message;
     res.json({ registry, status: 'failed', error: message });
   }
