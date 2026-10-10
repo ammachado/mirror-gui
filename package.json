@@ -19,7 +19,7 @@
   "scripts": {
     "dev": "tsx watch --exclude 'src/**' --exclude 'tests/**' server/index.ts",
     "start": "npm run dev",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && tsc -p server/tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "server": "tsx watch --exclude 'src/**' --exclude 'tests/**' server/index.ts",
     "server:build": "tsc -p server/tsconfig.json",

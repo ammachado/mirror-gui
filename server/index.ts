@@ -1,4 +1,4 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { type Express, Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -269,7 +269,7 @@ interface RunningProcess {
   child: ChildProcess;
 }
 
-const app = express();
+const app: Express = express();
 export { app };
 const PORT = process.env.PORT || 3001;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -2419,7 +2419,7 @@ app.get('/api/registries', async (_req: Request, res: Response) => {
 
     const registries = Object.entries(auths)
       .filter(([registry]) => !nonRegistryHosts.includes(registry))
-      .map(([registry, authData]) => {
+      .map(([registry, authData]: [string, Record<string, string>]) => {
       let username = '';
       if (authData.auth) {
         try {
