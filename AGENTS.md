@@ -18,6 +18,9 @@ The backend spawns `oc-mirror` as a child process to perform mirror-to-disk oper
 | Server utilities | `server/utils.ts` | Shared helpers (version parsing, catalog name resolution, channel normalization) |
 | Catalog channel parser | `server/catalogChannels.ts` | Extracts channel objects from pre-fetched catalog metadata |
 | Path availability checker | `server/pathAvailability.ts` | Validates filesystem paths for mirror destinations |
+| Operation modes | `server/operationModes.ts` | Mirror modes, labels, and destination registry validation (shared with the UI, so no Node imports) |
+| oc-mirror argv builder | `server/ocMirrorArgs.ts` | Builds the oc-mirror command line for mirror-to-disk, mirror-to-mirror, and disk-to-mirror |
+| Registry credentials | `server/registryCredentials.ts` | Destination registry credential storage, auth file validation, and pull secret merging |
 | React app entrypoint | `src/App.tsx` | App shell with PatternFly layout, routing, theme/alert providers |
 | Dashboard | `src/components/Dashboard.tsx` | System overview, stats, recent operations |
 | Mirror Configuration | `src/components/MirrorConfig.tsx` | Visual ImageSetConfiguration builder |
