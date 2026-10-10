@@ -164,3 +164,23 @@ export function mergeAuthFiles(pullSecret: AuthFile, destination: AuthFile, dest
   }
   return merged;
 }
+
+/**
+ * Deletes temporary merged authfiles left in the run folder. They hold the pull secret and
+ * destination credentials and are normally removed when an operation ends; a crash or pod
+ * restart skips that, and nothing can still be running at startup.
+ */
+export async function removeStaleAuthfiles(runDir: string): Promise<number> {
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(runDir);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 0;
+    }
+    throw error;
+  }
+  const stale = entries.filter((name) => /^authfile-.*\.json$/.test(name));
+  await Promise.all(stale.map((name) => fsp.rm(path.join(runDir, name), { force: true })));
+  return stale.length;
+}
