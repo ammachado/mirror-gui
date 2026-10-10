@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -27,8 +27,17 @@ describe('isPathAvailable', () => {
   });
 
   it('returns false when nearest existing ancestor is not writable', async () => {
-    const impossiblePath = '/nonexistent-xyz-123-xyz/sub';
-    expect(await isPathAvailable(impossiblePath)).toBe(false);
+    const accessSpy = vi.spyOn(fs.promises, 'access');
+    accessSpy
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(Object.assign(new Error('read-only'), { code: 'EACCES' }));
+
+    try {
+      expect(await isPathAvailable(path.join(tempDir, 'read-only', 'sub'))).toBe(false);
+    } finally {
+      accessSpy.mockRestore();
+    }
   });
 
   it('handles existing directory that is writable', async () => {
