@@ -872,19 +872,19 @@ Credentials for registries that mirror-to-mirror and disk-to-mirror push to. The
 }
 ```
 
-`path` is set only when externally managed. When the file is malformed, `credentials` is empty and `error` describes the problem.
+`path` is set only when externally managed. When the file is malformed, `credentials` is empty and `error` describes the problem. A verification result is shown only while the stored credential is the one that was verified; after it changes (for example a rotated Secret) the status returns to `not_verified`.
 
 #### PUT /api/registry-credentials
 
-Adds or replaces one entry. Body: `{ "registry": "host[:port]", "username": "alice", "password": "..." }`. Returns `400` for invalid input and `409` when externally managed.
+Adds or replaces one entry. Body: `{ "registry": "host[:port]", "username": "alice", "password": "..." }`. Returns `400` for invalid input and `409` when externally managed or when the stored file is malformed (fix or remove the file first; it is left untouched).
 
 #### DELETE /api/registry-credentials/:registry
 
-Removes one entry. Returns `404` when absent and `409` when externally managed.
+Removes one entry. Returns `404` when absent and `409` when externally managed or when the stored file is malformed.
 
 #### POST /api/registry-credentials/verify
 
-Body: `{ "registry": "host[:port]" }`. Response: `{ "registry", "status": "authenticated" | "failed", "error"? }`.
+Body: `{ "registry": "host[:port]" }`. Response: `{ "registry", "status": "authenticated" | "failed", "error"? }`. Verification always checks the registry's TLS certificate; when the certificate cannot be verified (self-signed or private CA), `error` says so and the credentials are not checked. Operations can still push to such a registry with `skipDestTlsVerify`.
 
 ### Cache Management
 

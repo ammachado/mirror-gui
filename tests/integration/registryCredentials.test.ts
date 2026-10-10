@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { getTestApp } from './helpers/testApp.js';
@@ -14,6 +14,8 @@ describe('Destination registry credentials API', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     delete process.env.OC_MIRROR_REGISTRY_CREDENTIALS;
     await fs.promises.rm(appManagedFile, { force: true });
   });
@@ -69,6 +71,73 @@ describe('Destination registry credentials API', () => {
       status: 'failed',
       error: 'No credentials found for this registry',
     });
+  });
+
+  describe('verification', () => {
+    const okFetch = () => vi.fn(async () => new Response('{}', { status: 200 }));
+
+    it('shows a successful verification in the list', async () => {
+      await request.put('/api/registry-credentials').send({ registry: 'v.example.com', username: 'a', password: 'b' });
+      const fetchMock = okFetch();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const verify = await request.post('/api/registry-credentials/verify').send({ registry: 'v.example.com' });
+      expect(verify.body).toEqual({ registry: 'v.example.com', status: 'authenticated' });
+      expect(fetchMock).toHaveBeenCalledWith('https://v.example.com/v2/', expect.anything());
+
+      const res = await request.get('/api/registry-credentials');
+      expect(res.body.credentials).toEqual([{ registry: 'v.example.com', username: 'a', status: 'authenticated' }]);
+    });
+
+    // A rotated Secret must not keep showing "Authenticated" for credentials
+    // that were never checked.
+    it('drops a cached result when the stored credential changes outside the app', async () => {
+      const external = path.join(storageDir, 'rotating-auth.json');
+      const write = (pw: string) => fs.promises.writeFile(
+        external,
+        JSON.stringify({ auths: { 'rot.example.com': { auth: Buffer.from(`u:${pw}`).toString('base64') } } }),
+      );
+      await write('one');
+      process.env.OC_MIRROR_REGISTRY_CREDENTIALS = external;
+      vi.stubGlobal('fetch', okFetch());
+      await request.post('/api/registry-credentials/verify').send({ registry: 'rot.example.com' });
+      expect((await request.get('/api/registry-credentials')).body.credentials[0].status).toBe('authenticated');
+
+      await write('two');
+      expect((await request.get('/api/registry-credentials')).body.credentials[0].status).toBe('not_verified');
+    });
+
+    it('explains a TLS certificate failure instead of reporting bad credentials', async () => {
+      await request.put('/api/registry-credentials').send({ registry: 'selfsigned.example.com', username: 'a', password: 'b' });
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('self-signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }) });
+      }));
+      const res = await request.post('/api/registry-credentials/verify').send({ registry: 'selfsigned.example.com' });
+      expect(res.body.status).toBe('failed');
+      expect(res.body.error).toMatch(/TLS certificate/);
+      expect(res.body.error).toMatch(/Skip TLS verification/);
+    });
+
+    it('reports and logs a malformed credentials file during verification', async () => {
+      await fs.promises.writeFile(appManagedFile, '{ not json');
+      const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await request.post('/api/registry-credentials/verify').send({ registry: 'v.example.com' });
+      expect(res.body.status).toBe('failed');
+      expect(res.body.error).toMatch(/not valid JSON/);
+      expect(logSpy).toHaveBeenCalled();
+    });
+  });
+
+  // The request is fine; the stored file is what needs fixing, so 409 tells
+  // the client not to retry the same request unchanged.
+  it('refuses to save or delete over a malformed app-managed file with 409 and leaves it untouched', async () => {
+    await fs.promises.writeFile(appManagedFile, '{ not json');
+    const put = await request.put('/api/registry-credentials').send({ registry: 'm.example.com', username: 'a', password: 'b' });
+    expect(put.status).toBe(409);
+    expect(put.body.error).toMatch(/not valid JSON/);
+    const del = await request.delete('/api/registry-credentials/m.example.com');
+    expect(del.status).toBe(409);
+    expect(await fs.promises.readFile(appManagedFile, 'utf8')).toBe('{ not json');
   });
 
   describe('externally managed file', () => {
