@@ -37,6 +37,16 @@ describe('Operation modes', () => {
       }
     });
 
+  // The fake oc-mirror records argv before it copies the authfile, so wait for the copy.
+  const readAuthCopy = () =>
+    waitFor(async () => {
+      try {
+        return JSON.parse(await fs.promises.readFile(authCopy, 'utf8'));
+      } catch {
+        return undefined;
+      }
+    });
+
   const waitForCompletion = (operationId: string) =>
     waitFor(async () => {
       const res = await request.get('/api/operations');
@@ -163,7 +173,7 @@ describe('Operation modes', () => {
 
     const authfile = args[args.indexOf('--authfile') + 1];
     expect(authfile).toBe(path.join(runDir, `authfile-${res.body.operationId}.json`));
-    const merged = JSON.parse(await fs.promises.readFile(authCopy, 'utf8'));
+    const merged = await readAuthCopy();
     expect(merged.auths['registry.redhat.io'].auth).toBe(b64('rh:pw'));
     // The pull secret also has this host, so the destination credentials are
     // scoped to the destination path and pulls from the host keep the pull secret.
@@ -199,7 +209,7 @@ describe('Operation modes', () => {
     expect(args).not.toContain('--workspace');
     expect(args).toContain('--dest-tls-verify=false');
     expect(args[args.length - 1]).toBe('docker://reg.example.com');
-    expect(JSON.parse(await fs.promises.readFile(authCopy, 'utf8'))).toEqual({ auths: {} });
+    expect(await readAuthCopy()).toEqual({ auths: {} });
     await waitForCompletion(res.body.operationId);
   });
 
