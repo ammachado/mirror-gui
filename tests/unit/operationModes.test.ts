@@ -38,6 +38,18 @@ describe('isValidRegistryHost', () => {
     (host) => expect(isValidRegistryHost(host)).toBe(true),
   );
 
+  it.each(['reg.example.com:1', 'reg.example.com:65535'])(
+    'accepts the port range boundary %s',
+    (host) => expect(isValidRegistryHost(host)).toBe(true),
+  );
+
+  // A port outside 1-65535 can never be reached, so reject it up front
+  // instead of letting oc-mirror fail partway through a run.
+  it.each(['reg.example.com:0', 'reg.example.com:65536', 'reg.example.com:99999', 'reg.example.com:05000'])(
+    'rejects the out-of-range or zero-padded port %s',
+    (host) => expect(isValidRegistryHost(host)).toBe(false),
+  );
+
   it.each(['', 'https://quay.io', 'quay.io/ns', 'reg .com', 'reg:port', '-bad.com', 'reg.com:'])(
     'rejects %s',
     (host) => expect(isValidRegistryHost(host)).toBe(false),

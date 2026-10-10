@@ -20,11 +20,15 @@ export function isRegistryTargetMode(mode: OperationMode): boolean {
 }
 
 const HOST_LABEL = '[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?';
-const REGISTRY_HOST_PATTERN = new RegExp(`^${HOST_LABEL}(?:\\.${HOST_LABEL})*(?::\\d{1,5})?$`);
+const REGISTRY_HOST_PATTERN = new RegExp(`^${HOST_LABEL}(?:\\.${HOST_LABEL})*(?::([1-9]\\d{0,4}))?$`);
 const PATH_SEGMENT_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
 export function isValidRegistryHost(value: string): boolean {
-  return REGISTRY_HOST_PATTERN.test(value);
+  const match = REGISTRY_HOST_PATTERN.exec(value);
+  if (!match) {
+    return false;
+  }
+  return match[1] === undefined || Number(match[1]) <= 65535;
 }
 
 /** Returns a user-facing error for an invalid `host[:port][/namespace...]` value, or null when valid. */

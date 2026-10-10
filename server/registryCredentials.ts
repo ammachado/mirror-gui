@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getRegistryHost } from './operationModes.js';
+import { getRegistryHost, isValidRegistryHost } from './operationModes.js';
 
 const fsp = fs.promises;
 
@@ -74,10 +74,35 @@ export async function readAuthFile(filePath: string, label: string, requireAuth:
   return { auths: auths as Record<string, AuthEntry> };
 }
 
+/**
+ * Writes to a new 0600 file next to the target and renames it into place, so readers never
+ * see a partial file and the content is never readable through an older, looser mode.
+ */
 export async function writeAuthFile(filePath: string, file: AuthFile): Promise<void> {
-  await fsp.writeFile(filePath, JSON.stringify(file, null, 2), { encoding: 'utf8', mode: 0o600 });
-  // writeFile only applies mode when it creates the file.
-  await fsp.chmod(filePath, 0o600);
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fsp.writeFile(tempPath, JSON.stringify(file, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await fsp.rename(tempPath, filePath);
+  } catch (error: unknown) {
+    await fsp.rm(tempPath, { force: true });
+    throw error;
+  }
+}
+
+// Serializes read-modify-write cycles per file so concurrent saves do not drop entries.
+const fileQueues = new Map<string, Promise<unknown>>();
+
+function withFileLock<T>(filePath: string, task: () => Promise<T>): Promise<T> {
+  const previous = fileQueues.get(filePath) ?? Promise.resolve();
+  const result = previous.catch(() => {}).then(task);
+  const tail = result.catch(() => {});
+  fileQueues.set(filePath, tail);
+  void tail.then(() => {
+    if (fileQueues.get(filePath) === tail) {
+      fileQueues.delete(filePath);
+    }
+  });
+  return result;
 }
 
 export function listCredentials(file: AuthFile): Array<{ registry: string; username: string }> {
@@ -96,19 +121,26 @@ export async function upsertCredential(
   username: string,
   password: string,
 ): Promise<void> {
-  const file = await readAuthFile(filePath, 'Destination registry credentials', true);
-  file.auths[registry] = { auth: Buffer.from(`${username}:${password}`).toString('base64') };
-  await writeAuthFile(filePath, file);
+  if (!isValidRegistryHost(registry)) {
+    throw new Error(`Invalid registry "${registry}": expected a hostname with an optional port`);
+  }
+  await withFileLock(filePath, async () => {
+    const file = await readAuthFile(filePath, 'Destination registry credentials', true);
+    file.auths[registry] = { auth: Buffer.from(`${username}:${password}`).toString('base64') };
+    await writeAuthFile(filePath, file);
+  });
 }
 
 export async function removeCredential(filePath: string, registry: string): Promise<boolean> {
-  const file = await readAuthFile(filePath, 'Destination registry credentials', true);
-  if (!(registry in file.auths)) {
-    return false;
-  }
-  delete file.auths[registry];
-  await writeAuthFile(filePath, file);
-  return true;
+  return withFileLock(filePath, async () => {
+    const file = await readAuthFile(filePath, 'Destination registry credentials', true);
+    if (!Object.hasOwn(file.auths, registry)) {
+      return false;
+    }
+    delete file.auths[registry];
+    await writeAuthFile(filePath, file);
+    return true;
+  });
 }
 
 /**
