@@ -107,6 +107,70 @@ describe('writeAuthFile / upsertCredential / removeCredential', () => {
     await expect(removeCredential(file, 'a.example.com')).resolves.toBe(false);
     expect((await readAuthFile(file, 'Creds', true)).auths).toEqual({});
   });
+
+  it('does not treat inherited object keys as stored credentials', async () => {
+    const file = path.join(dir, 'creds.json');
+    await upsertCredential(file, 'a.example.com', 'u1', 'p1');
+    await expect(removeCredential(file, 'constructor')).resolves.toBe(false);
+    await expect(removeCredential(file, 'toString')).resolves.toBe(false);
+  });
+
+  // A "__proto__" key would be swallowed by the object prototype and never
+  // reach the file, so the user would see "saved" but nothing was stored.
+  it('rejects registry names that are not valid hosts, including __proto__', async () => {
+    const file = path.join(dir, 'creds.json');
+    await expect(upsertCredential(file, '__proto__', 'u', 'p')).rejects.toThrow(/registry/i);
+    await expect(upsertCredential(file, 'https://reg.example.com', 'u', 'p')).rejects.toThrow(/registry/i);
+    await expect(fs.promises.access(file)).rejects.toThrow();
+  });
+
+  // Concurrent Settings saves must not lose each other's entries.
+  it('keeps every entry when upserts and removes run concurrently', async () => {
+    const file = path.join(dir, 'creds.json');
+    await upsertCredential(file, 'gone.example.com', 'u0', 'p0');
+    await Promise.all([
+      upsertCredential(file, 'a.example.com', 'u1', 'p1'),
+      upsertCredential(file, 'b.example.com', 'u2', 'p2'),
+      upsertCredential(file, 'c.example.com', 'u3', 'p3'),
+      removeCredential(file, 'gone.example.com'),
+    ]);
+    const saved = await readAuthFile(file, 'Creds', true);
+    expect(Object.keys(saved.auths).sort()).toEqual(['a.example.com', 'b.example.com', 'c.example.com']);
+  });
+
+  // Replacing the file by rename means a reader never sees a half-written
+  // file, and the new content is never briefly readable with the old,
+  // looser permissions.
+  it('replaces the file atomically and leaves no temporary files behind', async () => {
+    const file = path.join(dir, 'open.json');
+    await fs.promises.writeFile(file, '{"auths":{}}', { mode: 0o644 });
+    const before = await fs.promises.stat(file);
+    await writeAuthFile(file, { auths: { 'a.example.com': { auth: b64('u:p') } } });
+    const after = await fs.promises.stat(file);
+    expect(after.ino).not.toBe(before.ino);
+    expect(after.mode & 0o777).toBe(0o600);
+    expect(await fs.promises.readdir(dir)).toEqual(['open.json']);
+  });
+
+  it('leaves a malformed file untouched instead of overwriting it on upsert or remove', async () => {
+    const file = path.join(dir, 'creds.json');
+    await fs.promises.writeFile(file, '{not json');
+    await expect(upsertCredential(file, 'a.example.com', 'u', 'p')).rejects.toBeInstanceOf(AuthFileError);
+    await expect(removeCredential(file, 'a.example.com')).rejects.toBeInstanceOf(AuthFileError);
+    expect(await fs.promises.readFile(file, 'utf8')).toBe('{not json');
+  });
+});
+
+describe('readAuthFile edge cases', () => {
+  it('rejects an entry that is not an object', async () => {
+    const file = path.join(dir, 'creds.json');
+    await fs.promises.writeFile(file, JSON.stringify({ auths: { 'a.example.com': 'b64' } }));
+    await expect(readAuthFile(file, 'Creds', false)).rejects.toThrow(/entry "a\.example\.com" must be an object/);
+  });
+
+  it('reports read failures other than a missing file instead of returning no credentials', async () => {
+    await expect(readAuthFile(dir, 'Creds', true)).rejects.toThrow(/could not be read/);
+  });
 });
 
 describe('listCredentials', () => {

@@ -69,6 +69,23 @@ describe('buildOcMirrorArgs', () => {
     }
   });
 
+  it('ignores destination settings in mirror-to-disk so a stale form value cannot change the M2D command', () => {
+    const plain = buildOcMirrorArgs({ ...base, mode: 'mirrorToDisk' });
+    const withDestination = buildOcMirrorArgs({
+      ...base,
+      mode: 'mirrorToDisk',
+      destinationRegistry: 'reg.example.com/ocp',
+      skipDestTlsVerify: false,
+    });
+    expect(withDestination).toEqual(plain);
+  });
+
+  it('verifies destination TLS when skipDestTlsVerify is explicitly false', () => {
+    const args = buildOcMirrorArgs({ ...base, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', skipDestTlsVerify: false });
+    expect(args).toContain('--dest-tls-verify=true');
+    expect(args).not.toContain('--dest-tls-verify=false');
+  });
+
   it('throws when a registry-target mode has no destination, instead of building a broken command', () => {
     expect(() => buildOcMirrorArgs({ ...base, mode: 'mirrorToMirror' })).toThrow(/destinationRegistry/);
   });
