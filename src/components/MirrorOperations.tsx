@@ -387,12 +387,14 @@ const MirrorOperations: React.FC = () => {
   const [destinationRegistry, setDestinationRegistry] = useState('');
   const [skipDestTlsVerify, setSkipDestTlsVerify] = useState(false);
   const [credentialHosts, setCredentialHosts] = useState<Set<string> | null>(null);
+  const [credentialsError, setCredentialsError] = useState<string | null>(null);
 
   const targetsRegistry = isRegistryTargetMode(mode);
   const trimmedDestination = destinationRegistry.trim();
   const destinationError = targetsRegistry ? getDestinationRegistryError(trimmedDestination) : null;
   const destinationHost = trimmedDestination && !destinationError ? getRegistryHost(trimmedDestination) : null;
-  const missingCredentials = !!destinationHost && credentialHosts !== null && !credentialHosts.has(destinationHost);
+  const missingCredentials = !!destinationHost && !credentialsError && credentialHosts !== null
+    && !credentialHosts.has(destinationHost);
 
   const operationsRef = useRef<Operation[]>([]);
   const notifiedOperationsRef = useRef(new Set<string>());
@@ -511,11 +513,21 @@ const MirrorOperations: React.FC = () => {
       for (const r of pullSecretRes.data.registries || []) hosts.add(r.registry);
       for (const c of credentialsRes.data.credentials || []) hosts.add(c.registry);
       setCredentialHosts(hosts);
+      setCredentialsError(credentialsRes.data.error || null);
     } catch (error) {
       console.error('Error fetching registry credentials:', error);
       setCredentialHosts(null);
+      setCredentialsError(null);
     }
   }, []);
+
+  // Credentials are often edited in Settings in another tab, so refresh on return.
+  useEffect(() => {
+    if (!targetsRegistry) return undefined;
+    const refresh = () => void fetchCredentialHosts();
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [targetsRegistry, fetchCredentialHosts]);
 
   const confirmCreateFolder = useCallback(async (name: string) => {
     const trimmed = name.trim();
@@ -1120,6 +1132,17 @@ const MirrorOperations: React.FC = () => {
                   </HelperText>
                 </FormHelperText>
               </FormGroup>
+              {credentialsError && (
+                <Alert
+                  variant="danger"
+                  isInline
+                  className="pf-v6-u-mt-sm"
+                  title="Cannot read destination registry credentials"
+                >
+                  {credentialsError} Operations that push to a registry will fail until the file is fixed.{' '}
+                  <Link to="/settings?tab=registry">Open registry settings</Link>.
+                </Alert>
+              )}
               {missingCredentials && (
                 <Alert
                   variant="warning"
