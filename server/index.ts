@@ -1,5 +1,4 @@
 import express, { Request, Response, NextFunction } from 'express';
-import cors from 'cors';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -9,10 +8,30 @@ import YAML from 'yaml';
 import { v4 as uuidv4 } from 'uuid';
 import compression from 'compression';
 
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { getChannelObjectsFromGeneratedOperator } from './catalogChannels.js';
 import { isPathAvailable } from './pathAvailability.js';
 import { isValidArtifactName, listArtifacts, resolveArtifactPath } from './artifacts.js';
+import { buildOcMirrorArgs } from './ocMirrorArgs.js';
+import {
+  type OperationMode,
+  OPERATION_MODES,
+  getDestinationRegistryError,
+  isOperationMode,
+  isRegistryTargetMode,
+  isValidRegistryHost,
+} from './operationModes.js';
+import {
+  type AuthFile,
+  AuthFileError,
+  listCredentials,
+  mergeAuthFiles,
+  readAuthFile,
+  removeCredential,
+  resolveCredentialsLocation,
+  upsertCredential,
+  writeAuthFile,
+} from './registryCredentials.js';
 import {
   type ChannelObject,
   parseOcMirrorVersion,
@@ -35,6 +54,9 @@ interface OperationRecord {
   id: string;
   name: string;
   configFile: string;
+  /** Absent on records created before modes existed; read as 'mirrorToDisk'. */
+  mode?: OperationMode;
+  destinationRegistry?: string;
   mirrorDestination?: string;
   status: 'running' | 'success' | 'failed' | 'stopped';
   startedAt: string;
@@ -49,6 +71,7 @@ interface OptionalFlagsBody {
   imageTimeout?: string;
   retryDelay?: string;
   retryTimes?: number;
+  maxNestedPaths?: number;
 }
 
 const OPTIONAL_FLAG_KEYS = new Set([
@@ -56,6 +79,7 @@ const OPTIONAL_FLAG_KEYS = new Set([
   'imageTimeout',
   'retryDelay',
   'retryTimes',
+  'maxNestedPaths',
 ]);
 
 /** Accept Go-style durations used by oc-mirror: "30s", "10m", "10m30s". */
@@ -73,6 +97,7 @@ function parseDurationToSeconds(value: string): number | null {
 
 function buildOptionalFlagArgs(
   raw: unknown,
+  mode: OperationMode,
 ): { ok: true; args: string[] } | { ok: false; error: string } {
   if (raw == null) {
     return { ok: true, args: [] };
@@ -150,6 +175,20 @@ function buildOptionalFlagArgs(
       };
     }
     additionalArgs.push('--retry-times', String(typed.retryTimes));
+  }
+
+  if (typed.maxNestedPaths != null) {
+    if (!isRegistryTargetMode(mode)) {
+      return { ok: false, error: 'optionalFlags.maxNestedPaths is only valid for mirrorToMirror and diskToMirror' };
+    }
+    if (
+      typeof typed.maxNestedPaths !== 'number' ||
+      !Number.isSafeInteger(typed.maxNestedPaths) ||
+      typed.maxNestedPaths < 1
+    ) {
+      return { ok: false, error: 'optionalFlags.maxNestedPaths must be a positive integer' };
+    }
+    additionalArgs.push('--max-nested-paths', String(typed.maxNestedPaths));
   }
 
   return { ok: true, args: additionalArgs };
@@ -238,7 +277,6 @@ const DIST_DIR = path.join(__dirname, '../dist');
 const DEV_INDEX_HTML = path.join(__dirname, '../index.html');
 
 app.use(compression());
-app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use((req: Request, res: Response, next: NextFunction) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -308,6 +346,12 @@ function authfileWriteFailure(error: unknown, fallbackMessage: string): { status
 }
 
 const runningProcesses = new Map<string, RunningProcess>();
+// Modes of running operations per folder. A start conflicts when a mirrorToMirror or
+// diskToMirror operation is on either side: M2D deletes earlier archives in its folder,
+// which would break a D2M run reading from it, and M2M/D2M share oc-mirror's working-dir.
+// mirrorToDisk runs on the same folder may overlap, as they always could. Checked and
+// claimed synchronously so two starts cannot both pass the check.
+const foldersInUse = new Map<string, OperationMode[]>();
 const stoppedOperations = new Set<string>();
 
 async function ensureDirectories(): Promise<void> {
@@ -1621,11 +1665,42 @@ app.get('/api/operations/history', async (req: Request, res: Response) => {
 
 app.post('/api/operations/start', async (req: Request, res: Response) => {
   try {
-    const { configFile, mirrorDestinationSubdir, optionalFlags } = req.body;
+    const {
+      configFile,
+      mirrorDestinationSubdir,
+      optionalFlags,
+      mode: rawMode,
+      destinationRegistry,
+      skipDestTlsVerify,
+    } = req.body;
     const operationId = uuidv4();
     const configPath = path.join(CONFIGS_DIR, configFile);
 
-    const optionalFlagsResult = buildOptionalFlagArgs(optionalFlags);
+    const mode: unknown = rawMode ?? 'mirrorToDisk';
+    if (!isOperationMode(mode)) {
+      return res.status(400).json({
+        error: `Unknown mode: ${String(rawMode)}`,
+        help: `Use one of: ${OPERATION_MODES.join(', ')}`,
+      });
+    }
+
+    const targetsRegistry = isRegistryTargetMode(mode);
+    if (!targetsRegistry && (destinationRegistry !== undefined || skipDestTlsVerify !== undefined)) {
+      return res.status(400).json({
+        error: 'destinationRegistry and skipDestTlsVerify are only valid for mirrorToMirror and diskToMirror',
+      });
+    }
+    if (targetsRegistry) {
+      const destinationError = getDestinationRegistryError(destinationRegistry);
+      if (destinationError) {
+        return res.status(400).json({ error: destinationError });
+      }
+      if (skipDestTlsVerify !== undefined && typeof skipDestTlsVerify !== 'boolean') {
+        return res.status(400).json({ error: 'skipDestTlsVerify must be a boolean' });
+      }
+    }
+
+    const optionalFlagsResult = buildOptionalFlagArgs(optionalFlags, mode);
     if (!optionalFlagsResult.ok) {
       return res.status(400).json({ error: optionalFlagsResult.error });
     }
@@ -1668,6 +1743,22 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
     }
 
     const mirrorPath = path.join(baseMirrorPath, subdirName);
+
+    if (mode === 'diskToMirror') {
+      let entries: string[];
+      try {
+        entries = await fsp.readdir(mirrorPath);
+      } catch {
+        return res.status(404).json({ error: 'Archive source folder not found', path: mirrorPath });
+      }
+      if (!entries.some((name) => /^mirror_.*\.tar$/.test(name))) {
+        return res.status(400).json({
+          error: 'Archive source folder contains no mirror_*.tar archives',
+          path: mirrorPath,
+          help: 'Copy the archives produced by a mirror-to-disk run into this folder first.',
+        });
+      }
+    }
 
     try {
       await fsp.mkdir(baseMirrorPath, { recursive: true, mode: 0o777 });
@@ -1732,10 +1823,50 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       });
     }
 
+    let mergedAuth: AuthFile | null = null;
+    if (targetsRegistry) {
+      try {
+        const credentialsLocation = resolveCredentialsLocation(process.env, STORAGE_DIR);
+        const [pullSecretAuth, destinationAuth] = await Promise.all([
+          readAuthFile(AUTHFILE_PATH, 'Pull secret', false),
+          readAuthFile(credentialsLocation.path, 'Destination registry credentials', true),
+        ]);
+        mergedAuth = mergeAuthFiles(pullSecretAuth, destinationAuth, destinationRegistry);
+      } catch (error: unknown) {
+        if (error instanceof AuthFileError) {
+          return res.status(500).json({ error: error.message });
+        }
+        throw error;
+      }
+    }
+
+    // No await between this check and the add, so concurrent starts cannot both claim the folder.
+    const activeModes = foldersInUse.get(mirrorPath) ?? [];
+    if (activeModes.length > 0 && (targetsRegistry || activeModes.some(isRegistryTargetMode))) {
+      return res.status(409).json({
+        error: 'Another running operation is using this folder',
+        path: mirrorPath,
+        help: 'Wait for it to finish or choose a different folder.',
+      });
+    }
+    foldersInUse.set(mirrorPath, [...activeModes, mode]);
+    let folderReleased = false;
+    const releaseFolder = () => {
+      if (folderReleased) return;
+      folderReleased = true;
+      const remaining = [...(foldersInUse.get(mirrorPath) ?? [])];
+      const index = remaining.indexOf(mode);
+      if (index !== -1) remaining.splice(index, 1);
+      if (remaining.length === 0) foldersInUse.delete(mirrorPath);
+      else foldersInUse.set(mirrorPath, remaining);
+    };
+
     const operation: OperationRecord = {
       id: operationId,
       name: `Mirror Operation ${operationId.slice(0, 8)}`,
       configFile,
+      mode,
+      ...(targetsRegistry ? { destinationRegistry } : {}),
       mirrorDestination: mirrorPath,
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -1745,11 +1876,42 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
     try {
       await saveOperation(operation);
     } catch (error: unknown) {
+      releaseFolder();
       console.error(`Error saving operation ${operationId}:`, error);
       return res.status(500).json({
         error: 'Failed to create operation record',
         details: (error as Error).message,
       });
+    }
+
+    const tempAuthfilePath = targetsRegistry ? path.join(RUN_DIR, `authfile-${operationId}.json`) : null;
+    const removeTempAuthfile = async () => {
+      if (!tempAuthfilePath) return;
+      try {
+        await fsp.rm(tempAuthfilePath, { force: true });
+      } catch (error: unknown) {
+        console.error(`Failed to remove temporary authfile for ${operationId}:`, error);
+      }
+    };
+
+    if (tempAuthfilePath && mergedAuth) {
+      try {
+        await fsp.mkdir(RUN_DIR, { recursive: true });
+        await writeAuthFile(tempAuthfilePath, mergedAuth);
+      } catch (error: unknown) {
+        await removeTempAuthfile();
+        releaseFolder();
+        console.error(`Error writing temporary authfile for ${operationId}:`, error);
+        await updateOperation(operationId, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          errorMessage: 'Failed to prepare registry credentials',
+        });
+        return res.status(500).json({
+          error: 'Failed to prepare registry credentials',
+          details: (error as Error).message,
+        });
+      }
     }
 
     const logFile = path.join(LOGS_DIR, `${operationId}.log`);
@@ -1762,21 +1924,34 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       if (!logStream.destroyed) logStream.end();
     };
 
-    const mirrorUrl = pathToFileURL(mirrorPath).href;
-
-  const child = spawn('oc-mirror', [
-      '--v2',
-      '--config', configPath,
-      '--dest-tls-verify=false',
-      '--src-tls-verify=false',
-      '--cache-dir', cacheDir,
-      '--authfile', AUTHFILE_PATH,
-      ...additionalArgs,
-      mirrorUrl,
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: RUN_DIR,
+    const ocMirrorArgs = buildOcMirrorArgs({
+      mode,
+      configPath,
+      folderPath: mirrorPath,
+      cacheDir,
+      authfilePath: tempAuthfilePath ?? AUTHFILE_PATH,
+      destinationRegistry: targetsRegistry ? destinationRegistry : undefined,
+      skipDestTlsVerify: skipDestTlsVerify === true,
+      additionalArgs,
     });
+
+    let child: ChildProcess;
+    try {
+      child = spawn('oc-mirror', ocMirrorArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: RUN_DIR,
+      });
+    } catch (error: unknown) {
+      finalizeLogStream();
+      await removeTempAuthfile();
+      releaseFolder();
+      await updateOperation(operationId, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        errorMessage: (error as Error).message,
+      });
+      throw error;
+    }
 
     runningProcesses.set(operationId, {
       pid: child.pid,
@@ -1803,6 +1978,8 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       operationFinalized = true;
       runningProcesses.delete(operationId);
       finalizeLogStream();
+      releaseFolder();
+      await removeTempAuthfile();
 
       let logs = stdout + stderr;
       if (!logs) {
@@ -1854,6 +2031,8 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       operationFinalized = true;
       runningProcesses.delete(operationId);
       finalizeLogStream();
+      releaseFolder();
+      await removeTempAuthfile();
 
       const completedAt = new Date().toISOString();
       const duration = Math.floor((new Date(completedAt).getTime() - new Date(operation.startedAt).getTime()) / 1000);
@@ -1961,7 +2140,14 @@ app.get('/api/operations/:id/details', async (req: Request, res: Response) => {
       throw e;
     }
 
+    const mode = operation.mode ?? 'mirrorToDisk';
     const details = {
+      mode,
+      destinationRegistry: operation.destinationRegistry,
+      // oc-mirror writes IDMS/ITMS/CatalogSource under <workspace or --from dir>/working-dir.
+      clusterResourcesPath: isRegistryTargetMode(mode) && operation.mirrorDestination
+        ? path.join(operation.mirrorDestination, 'working-dir', 'cluster-resources')
+        : undefined,
       imagesMirrored: 0,
       operatorsMirrored: 0,
       totalSize: 0,
@@ -2237,6 +2423,44 @@ app.get('/api/registries', async (_req: Request, res: Response) => {
   }
 });
 
+// Registries like registry.redhat.io and quay.io reject Basic auth on /v2/ and expect the
+// OAuth2 token exchange advertised in WWW-Authenticate, so both steps are tried.
+async function verifyRegistryAuth(
+  registry: string,
+  auth: string,
+): Promise<{ status: 'authenticated' | 'failed'; error?: string }> {
+  try {
+    const response = await fetch(`https://${registry}/v2/`, {
+      headers: { 'Authorization': `Basic ${auth}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (response.ok) {
+      return { status: 'authenticated' };
+    }
+    if (response.status === 401) {
+      const wwwAuth = response.headers.get('www-authenticate') || '';
+      const realmMatch = wwwAuth.match(/realm="([^"]+)"/);
+      const serviceMatch = wwwAuth.match(/service="([^"]+)"/);
+      if (realmMatch) {
+        const tokenUrl = new URL(realmMatch[1]);
+        if (serviceMatch) tokenUrl.searchParams.set('service', serviceMatch[1]);
+        const tokenRes = await fetch(tokenUrl.toString(), {
+          headers: { 'Authorization': `Basic ${auth}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (tokenRes.ok) {
+          return { status: 'authenticated' };
+        }
+        const body = await tokenRes.text().catch(() => '');
+        return { status: 'failed', error: `Authentication failed (${tokenRes.status}): ${body.slice(0, 200)}` };
+      }
+    }
+    return { status: 'failed', error: `HTTP ${response.status}` };
+  } catch (error: unknown) {
+    return { status: 'failed', error: (error as Error).message || 'Connection failed' };
+  }
+}
+
 app.post('/api/registries/verify', async (req: Request, res: Response) => {
   try {
     const { registry } = req.body;
@@ -2257,51 +2481,112 @@ app.post('/api/registries/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    const url = `https://${registry}/v2/`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Basic ${authData.auth}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    const sendResult = (result: { registry: string; status: string; error?: string }) => {
-      registryVerificationCache[result.registry] = { status: result.status, error: result.error };
-      res.json(result);
-    };
-
-    if (response.ok || response.status === 200) {
-      sendResult({ registry, status: 'authenticated' });
-      return;
-    }
-
-    if (response.status === 401) {
-      const wwwAuth = response.headers.get('www-authenticate') || '';
-      const realmMatch = wwwAuth.match(/realm="([^"]+)"/);
-      const serviceMatch = wwwAuth.match(/service="([^"]+)"/);
-
-      if (realmMatch) {
-        const tokenUrl = new URL(realmMatch[1]);
-        if (serviceMatch) tokenUrl.searchParams.set('service', serviceMatch[1]);
-        const tokenRes = await fetch(tokenUrl.toString(), {
-          headers: { 'Authorization': `Basic ${authData.auth}` },
-          signal: AbortSignal.timeout(10000),
-        });
-        if (tokenRes.ok) {
-          sendResult({ registry, status: 'authenticated' });
-          return;
-        }
-        const body = await tokenRes.text().catch(() => '');
-        sendResult({ registry, status: 'failed', error: `Authentication failed (${tokenRes.status}): ${body.slice(0, 200)}` });
-        return;
-      }
-    }
-
-    sendResult({ registry, status: 'failed', error: `HTTP ${response.status}` });
+    const result = await verifyRegistryAuth(registry, authData.auth);
+    registryVerificationCache[registry] = result;
+    res.json({ registry, ...result });
   } catch (error: unknown) {
     console.error(`Error verifying registry ${req.body?.registry}:`, error);
     const reg = req.body?.registry;
     const errMsg = (error as Error).message || 'Connection failed';
     if (reg) registryVerificationCache[reg] = { status: 'failed', error: errMsg };
     res.json({ registry: reg, status: 'failed', error: errMsg });
+  }
+});
+
+const destinationCredentialStatus: Record<string, { status: 'authenticated' | 'failed'; error?: string }> = {};
+
+function destinationCredentialsExternalMessage(filePath: string): string {
+  return `Destination registry credentials are managed outside the application at ${filePath} and cannot be changed here.`;
+}
+
+app.get('/api/registry-credentials', async (_req: Request, res: Response) => {
+  const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+  const base = { managedExternally: location.managedExternally, path: location.managedExternally ? location.path : null };
+  try {
+    const file = await readAuthFile(location.path, 'Destination registry credentials', true);
+    const credentials = listCredentials(file).map((entry) => ({
+      ...entry,
+      status: destinationCredentialStatus[entry.registry]?.status ?? 'not_verified',
+      ...(destinationCredentialStatus[entry.registry]?.error
+        ? { error: destinationCredentialStatus[entry.registry].error }
+        : {}),
+    }));
+    res.json({ ...base, credentials });
+  } catch (error: unknown) {
+    if (error instanceof AuthFileError) {
+      res.json({ ...base, credentials: [], error: error.message });
+      return;
+    }
+    console.error('Error reading destination registry credentials:', error);
+    res.status(500).json({ error: 'Failed to read destination registry credentials' });
+  }
+});
+
+app.put('/api/registry-credentials', async (req: Request, res: Response) => {
+  const { registry, username, password } = req.body || {};
+  if (typeof registry !== 'string' || !isValidRegistryHost(registry)) {
+    return res.status(400).json({ error: 'registry must be a hostname with an optional port, like registry.example.com:5000' });
+  }
+  if (typeof username !== 'string' || !username || username.includes(':')) {
+    return res.status(400).json({ error: 'username is required and must not contain ":"' });
+  }
+  if (typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'password is required' });
+  }
+
+  const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+  if (location.managedExternally) {
+    return res.status(409).json({ error: destinationCredentialsExternalMessage(location.path) });
+  }
+  try {
+    await upsertCredential(location.path, registry, username, password);
+    delete destinationCredentialStatus[registry];
+    res.json({ message: 'Registry credentials saved' });
+  } catch (error: unknown) {
+    console.error('Error saving destination registry credentials:', error);
+    const message = error instanceof AuthFileError ? error.message : 'Failed to save registry credentials';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.delete('/api/registry-credentials/:registry', async (req: Request, res: Response) => {
+  const { registry } = req.params;
+  const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+  if (location.managedExternally) {
+    return res.status(409).json({ error: destinationCredentialsExternalMessage(location.path) });
+  }
+  try {
+    const removed = await removeCredential(location.path, registry);
+    if (!removed) {
+      return res.status(404).json({ error: 'No credentials found for this registry' });
+    }
+    delete destinationCredentialStatus[registry];
+    res.json({ message: 'Registry credentials removed' });
+  } catch (error: unknown) {
+    console.error('Error removing destination registry credentials:', error);
+    const message = error instanceof AuthFileError ? error.message : 'Failed to remove registry credentials';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/registry-credentials/verify', async (req: Request, res: Response) => {
+  const { registry } = req.body || {};
+  if (typeof registry !== 'string' || !registry) {
+    return res.status(400).json({ error: 'Registry is required' });
+  }
+  try {
+    const location = resolveCredentialsLocation(process.env, STORAGE_DIR);
+    const file = await readAuthFile(location.path, 'Destination registry credentials', true);
+    const auth = file.auths[registry]?.auth;
+    if (!auth) {
+      return res.json({ registry, status: 'failed', error: 'No credentials found for this registry' });
+    }
+    const result = await verifyRegistryAuth(registry, auth);
+    destinationCredentialStatus[registry] = result;
+    res.json({ registry, ...result });
+  } catch (error: unknown) {
+    const message = error instanceof AuthFileError ? error.message : (error as Error).message;
+    res.json({ registry, status: 'failed', error: message });
   }
 });
 

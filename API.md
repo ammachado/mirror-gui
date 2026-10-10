@@ -616,6 +616,14 @@ Start a new mirror operation.
   - If not provided or empty, defaults to `default`
   - Must be alphanumeric with dashes and underscores only (no slashes or special characters)
   - Examples: `default`, `odf`, `production`, `test-123`
+- `mode` (string, optional): `mirrorToDisk` (default), `mirrorToMirror`, or `diskToMirror`.
+- `destinationRegistry` (string, required for `mirrorToMirror` and `diskToMirror`): `host[:port]` with an optional lowercase namespace path, for example `registry.example.com:5000/ocp`. Do not include `docker://`, a tag, or a digest. Rejected for `mirrorToDisk`.
+- `skipDestTlsVerify` (boolean, optional, `mirrorToMirror`/`diskToMirror` only): passes `--dest-tls-verify=false`. Defaults to verifying TLS.
+- `optionalFlags.maxNestedPaths` (positive integer, `mirrorToMirror`/`diskToMirror` only): passes `--max-nested-paths`.
+
+The meaning of `mirrorDestinationSubdir` depends on the mode: the archive output folder for `mirrorToDisk`, the `--workspace` folder for `mirrorToMirror` (created if missing), and the `--from` archive source for `diskToMirror` (must exist and contain `mirror_*.tar`; `404` when missing, `400` when it has no archives). A start returns `409` when a running operation uses the same folder and either operation is `mirrorToMirror` or `diskToMirror`.
+
+For registry-target modes the server merges the pull secret with the destination registry credentials (destination entries win for the same host; if the destination has a namespace and the pull secret also has its host, the destination entry is keyed by the full destination path so pulls from that host keep the pull secret) into a temporary `0600` authfile that is deleted when the operation ends. A malformed pull secret or credentials file returns `500` naming the file.
 
 **Response:**
 ```json
@@ -684,6 +692,9 @@ Get detailed information about a specific operation.
 **Response Fields:**
 - `mirrorDestination`: The full container path where mirror files are saved (e.g., `/app/data/mirrors/default`)
 - Host path is `{project-root}/data/mirrors/{subdirectory}/` where `{project-root}` is typically the application directory
+- `mode`: The operation mode (`mirrorToDisk` for records created before modes existed)
+- `destinationRegistry`: Present for `mirrorToMirror` and `diskToMirror`
+- `clusterResourcesPath`: For `mirrorToMirror` and `diskToMirror`, the folder holding the generated IDMS, ITMS, and CatalogSource manifests (`<folder>/working-dir/cluster-resources`)
 
 #### GET /api/operations/:id/artifacts
 List the files in the mirror destination of a successful operation, so they can be downloaded. Available only when `artifactDownloadsEnabled` is true in `GET /api/system/info`.
@@ -875,6 +886,36 @@ Verify authentication against a specific registry using Docker v2 auth flow. Res
 }
 ```
 
+### Destination Registry Credentials
+
+Credentials for registries that mirror-to-mirror and disk-to-mirror push to. They are stored separately from the pull secret in `STORAGE_DIR/registry-credentials.json` (mode `0600`). When `OC_MIRROR_REGISTRY_CREDENTIALS` points to a file (for example a mounted Secret), that file is used read-only and write endpoints return `409`. Passwords and `auth` values are never returned.
+
+#### GET /api/registry-credentials
+
+```json
+{
+  "managedExternally": false,
+  "path": null,
+  "credentials": [
+    { "registry": "mirror.example.com:5000", "username": "alice", "status": "not_verified" }
+  ]
+}
+```
+
+`path` is set only when externally managed. When the file is malformed, `credentials` is empty and `error` describes the problem.
+
+#### PUT /api/registry-credentials
+
+Adds or replaces one entry. Body: `{ "registry": "host[:port]", "username": "alice", "password": "..." }`. Returns `400` for invalid input and `409` when externally managed.
+
+#### DELETE /api/registry-credentials/:registry
+
+Removes one entry. Returns `404` when absent and `409` when externally managed.
+
+#### POST /api/registry-credentials/verify
+
+Body: `{ "registry": "host[:port]" }`. Response: `{ "registry", "status": "authenticated" | "failed", "error"? }`.
+
 ### Cache Management
 
 #### POST /api/cache/cleanup
@@ -976,7 +1017,7 @@ Currently, there are no rate limits implemented on the API endpoints.
 
 ## CORS
 
-The API supports CORS and can be accessed from web browsers. All origins are allowed in development mode.
+The API does not send CORS headers, so browsers only allow the Mirror-GUI UI itself (same origin) to call it. Pages on other sites cannot read responses or send JSON write requests. Scripts and tools that are not browsers (curl, CI jobs) are unaffected. The API has no authentication; protect network access to it (see the Helm Route notes in the README).
 
 ## Health Check
 
