@@ -11,6 +11,7 @@ import {
   upsertCredential,
   removeCredential,
   mergeAuthFiles,
+  removeStaleAuthfiles,
 } from '../../server/registryCredentials.js';
 
 const b64 = (s: string) => Buffer.from(s).toString('base64');
@@ -214,5 +215,21 @@ describe('mergeAuthFiles', () => {
       'reg.example.com:5000',
     );
     expect(merged).toEqual({ auths: { 'reg.example.com:5000': { auth: 'new' } } });
+  });
+});
+
+// Temporary authfiles hold the whole pull secret plus destination credentials.
+// After a crash nothing removes them, so startup sweeps them.
+describe('removeStaleAuthfiles', () => {
+  it('deletes leftover temporary authfiles and keeps everything else', async () => {
+    await fs.promises.writeFile(path.join(dir, 'authfile-1.json'), '{}');
+    await fs.promises.writeFile(path.join(dir, 'authfile-2.json'), '{}');
+    await fs.promises.writeFile(path.join(dir, 'keep.json'), '{}');
+    await expect(removeStaleAuthfiles(dir)).resolves.toBe(2);
+    expect(await fs.promises.readdir(dir)).toEqual(['keep.json']);
+  });
+
+  it('does nothing when the run folder does not exist yet', async () => {
+    await expect(removeStaleAuthfiles(path.join(dir, 'missing'))).resolves.toBe(0);
   });
 });

@@ -27,6 +27,7 @@ import {
   mergeAuthFiles,
   readAuthFile,
   removeCredential,
+  removeStaleAuthfiles,
   resolveCredentialsLocation,
   upsertCredential,
   writeAuthFile,
@@ -349,6 +350,19 @@ const runningProcesses = new Map<string, RunningProcess>();
 // mirrorToDisk runs on the same folder may overlap, as they always could. Checked and
 // claimed synchronously so two starts cannot both pass the check.
 const foldersInUse = new Map<string, OperationMode[]>();
+
+function isFolderBusyFor(mirrorPath: string, mode: OperationMode): boolean {
+  const activeModes = foldersInUse.get(mirrorPath) ?? [];
+  return activeModes.length > 0 && (isRegistryTargetMode(mode) || activeModes.some(isRegistryTargetMode));
+}
+
+function folderBusyResponse(mirrorPath: string) {
+  return {
+    error: 'Another running operation is using this folder',
+    path: mirrorPath,
+    help: 'Wait for it to finish or choose a different folder.',
+  };
+}
 const stoppedOperations = new Set<string>();
 
 async function ensureDirectories(): Promise<void> {
@@ -432,6 +446,11 @@ async function clearOperationHistory(): Promise<void> {
 ensureDirectories().then(() => {
   if (process.env.VITEST !== 'true') {
     clearOperationHistory();
+    removeStaleAuthfiles(RUN_DIR)
+      .then((count) => {
+        if (count > 0) console.log(`Removed ${count} temporary authfiles left by an earlier run`);
+      })
+      .catch((error: unknown) => console.error('Error removing temporary authfiles:', error));
   }
 });
 
@@ -1741,6 +1760,12 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
 
     const mirrorPath = path.join(baseMirrorPath, subdirName);
 
+    // Checked again when the folder is claimed; this early check gives a busy folder the
+    // right error before the archive check below.
+    if (isFolderBusyFor(mirrorPath, mode)) {
+      return res.status(409).json(folderBusyResponse(mirrorPath));
+    }
+
     if (mode === 'diskToMirror') {
       let entries: string[];
       try {
@@ -1754,6 +1779,24 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
           path: mirrorPath,
           help: 'Copy the archives produced by a mirror-to-disk run into this folder first.',
         });
+      }
+    }
+
+    // Read before creating the folder so bad credentials do not leave an empty workspace.
+    let mergedAuth: AuthFile | null = null;
+    if (targetsRegistry) {
+      try {
+        const credentialsLocation = resolveCredentialsLocation(process.env, STORAGE_DIR);
+        const [pullSecretAuth, destinationAuth] = await Promise.all([
+          readAuthFile(AUTHFILE_PATH, 'Pull secret', false),
+          readAuthFile(credentialsLocation.path, 'Destination registry credentials', true),
+        ]);
+        mergedAuth = mergeAuthFiles(pullSecretAuth, destinationAuth, destinationRegistry);
+      } catch (error: unknown) {
+        if (error instanceof AuthFileError) {
+          return res.status(500).json({ error: error.message });
+        }
+        throw error;
       }
     }
 
@@ -1820,33 +1863,11 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       });
     }
 
-    let mergedAuth: AuthFile | null = null;
-    if (targetsRegistry) {
-      try {
-        const credentialsLocation = resolveCredentialsLocation(process.env, STORAGE_DIR);
-        const [pullSecretAuth, destinationAuth] = await Promise.all([
-          readAuthFile(AUTHFILE_PATH, 'Pull secret', false),
-          readAuthFile(credentialsLocation.path, 'Destination registry credentials', true),
-        ]);
-        mergedAuth = mergeAuthFiles(pullSecretAuth, destinationAuth, destinationRegistry);
-      } catch (error: unknown) {
-        if (error instanceof AuthFileError) {
-          return res.status(500).json({ error: error.message });
-        }
-        throw error;
-      }
-    }
-
     // No await between this check and the add, so concurrent starts cannot both claim the folder.
-    const activeModes = foldersInUse.get(mirrorPath) ?? [];
-    if (activeModes.length > 0 && (targetsRegistry || activeModes.some(isRegistryTargetMode))) {
-      return res.status(409).json({
-        error: 'Another running operation is using this folder',
-        path: mirrorPath,
-        help: 'Wait for it to finish or choose a different folder.',
-      });
+    if (isFolderBusyFor(mirrorPath, mode)) {
+      return res.status(409).json(folderBusyResponse(mirrorPath));
     }
-    foldersInUse.set(mirrorPath, [...activeModes, mode]);
+    foldersInUse.set(mirrorPath, [...(foldersInUse.get(mirrorPath) ?? []), mode]);
     let folderReleased = false;
     const releaseFolder = () => {
       if (folderReleased) return;
@@ -1912,7 +1933,28 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
     }
 
     const logFile = path.join(LOGS_DIR, `${operationId}.log`);
+    // Created up front so an unwritable log folder fails the start cleanly; the stream
+    // below would only report it later as an unhandled 'error' event.
+    try {
+      await fsp.writeFile(logFile, '');
+    } catch (error: unknown) {
+      await removeTempAuthfile();
+      releaseFolder();
+      console.error(`Error creating log file for ${operationId}:`, error);
+      await updateOperation(operationId, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        errorMessage: 'Failed to create operation log',
+      });
+      return res.status(500).json({
+        error: 'Failed to create operation log',
+        details: (error as Error).message,
+      });
+    }
     const logStream = fs.createWriteStream(logFile);
+    logStream.on('error', (error: Error) => {
+      console.error(`Error writing log file for ${operationId}:`, error);
+    });
     let logStreamFinalized = false;
 
     const finalizeLogStream = () => {
@@ -1921,22 +1963,20 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       if (!logStream.destroyed) logStream.end();
     };
 
-    const ocMirrorArgs = buildOcMirrorArgs({
-      mode,
-      configPath,
-      folderPath: mirrorPath,
-      cacheDir,
-      authfilePath: tempAuthfilePath ?? AUTHFILE_PATH,
-      destinationRegistry: targetsRegistry ? destinationRegistry : undefined,
-      skipDestTlsVerify: skipDestTlsVerify === true,
-      additionalArgs,
-    });
-
-    const quoteArg = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, '\'\\\'\'')}'`);
-    logStream.write(`$ oc-mirror ${ocMirrorArgs.map(quoteArg).join(' ')}\n`);
-
     let child: ChildProcess;
     try {
+      const ocMirrorArgs = buildOcMirrorArgs({
+        mode,
+        configPath,
+        folderPath: mirrorPath,
+        cacheDir,
+        authfilePath: tempAuthfilePath ?? AUTHFILE_PATH,
+        destinationRegistry: targetsRegistry ? destinationRegistry : undefined,
+        skipDestTlsVerify: skipDestTlsVerify === true,
+        additionalArgs,
+      });
+      const quoteArg = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, '\'\\\'\'')}'`);
+      logStream.write(`$ oc-mirror ${ocMirrorArgs.map(quoteArg).join(' ')}\n`);
       child = spawn('oc-mirror', ocMirrorArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: RUN_DIR,
@@ -2064,8 +2104,9 @@ app.post('/api/operations/:id/stop', async (req: Request, res: Response) => {
       try {
         processInfo.child.kill('SIGTERM');
 
+        // child.killed only says a signal was sent, so check whether the process has exited.
         setTimeout(() => {
-          if (processInfo.child.killed === false) {
+          if (processInfo.child.exitCode === null && processInfo.child.signalCode === null) {
             processInfo.child.kill('SIGKILL');
           }
         }, 5000);

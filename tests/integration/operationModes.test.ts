@@ -66,6 +66,9 @@ describe('Operation modes', () => {
         '  if [ "$prev" = "--authfile" ] && [ -n "$OC_MIRROR_AUTH_COPY" ]; then cp "$arg" "$OC_MIRROR_AUTH_COPY"; fi',
         '  prev="$arg"',
         'done',
+        // OC_MIRROR_IGNORE_TERM simulates a process that ignores SIGTERM; the ignored
+        // disposition survives exec.
+        'if [ -n "$OC_MIRROR_IGNORE_TERM" ]; then trap "" TERM; fi',
         // exec so SIGTERM from the stop endpoint reaches sleep directly; a child sleep would
         // keep stdout open and delay the close event until it finished.
         'exec sleep "${OC_MIRROR_SLEEP:-0}"',
@@ -81,6 +84,7 @@ describe('Operation modes', () => {
 
   afterEach(async () => {
     delete process.env.OC_MIRROR_SLEEP;
+    delete process.env.OC_MIRROR_IGNORE_TERM;
     delete process.env.OC_MIRROR_REGISTRY_CREDENTIALS;
     await fs.promises.rm(argsFile, { force: true });
     await fs.promises.rm(authCopy, { force: true });
@@ -278,4 +282,151 @@ describe('Operation modes', () => {
     expect(res.body.error).toContain(broken);
     expect((await request.get('/api/operations')).body.length).toBe(before);
   });
+  describe('folder guard', () => {
+    const exists = (p: string) => fs.promises.access(p).then(() => true, () => false);
+
+    it('rejects mirror-to-mirror and disk-to-mirror on a folder a running mirror-to-disk uses', async () => {
+      const folder = path.join(mirrorsDir, 'm2d-busy');
+      await fs.promises.mkdir(folder, { recursive: true });
+      await fs.promises.writeFile(path.join(folder, 'mirror_000001.tar'), '');
+      process.env.OC_MIRROR_SLEEP = '1';
+      const m2d = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'm2d-busy' });
+      expect(m2d.status).toBe(200);
+
+      for (const mode of ['mirrorToMirror', 'diskToMirror']) {
+        const res = await request.post('/api/operations/start').send({
+          configFile: CONFIG, mode, destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'm2d-busy',
+        });
+        expect(res.status, mode).toBe(409);
+      }
+      await waitForCompletion(m2d.body.operationId);
+    });
+
+    // Two mirror-to-disk runs on one folder were always allowed; the guard must not change that.
+    it('still allows two mirror-to-disk runs on the same folder', async () => {
+      process.env.OC_MIRROR_SLEEP = '1';
+      const first = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'm2d-twice' });
+      const second = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'm2d-twice' });
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      await waitForCompletion(first.body.operationId);
+      await waitForCompletion(second.body.operationId);
+    });
+
+    // The folder is busy; "no archives" would send the user looking for a problem that is not there.
+    it('reports a busy folder before checking it for archives', async () => {
+      process.env.OC_MIRROR_SLEEP = '1';
+      const m2d = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'm2d-empty' });
+      expect(m2d.status).toBe(200);
+      const d2m = await request.post('/api/operations/start').send({
+        configFile: CONFIG, mode: 'diskToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'm2d-empty',
+      });
+      expect(d2m.status).toBe(409);
+      await waitForCompletion(m2d.body.operationId);
+    });
+
+    it('does not create the workspace folder when destination credentials are malformed', async () => {
+      const broken = path.join(storageDir, 'broken-creds-2.json');
+      await fs.promises.writeFile(broken, 'not json');
+      process.env.OC_MIRROR_REGISTRY_CREDENTIALS = broken;
+      const res = await request.post('/api/operations/start').send({
+        configFile: CONFIG, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'never-created',
+      });
+      expect(res.status).toBe(500);
+      expect(await exists(path.join(mirrorsDir, 'never-created'))).toBe(false);
+    });
+  });
+
+  describe('start failures', () => {
+    it('returns 500 naming the pull secret when it is malformed', async () => {
+      await fs.promises.writeFile(process.env.OC_MIRROR_AUTHFILE!, '{ not json');
+      const res = await request.post('/api/operations/start').send({
+        configFile: CONFIG, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'bad-pull',
+      });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/Pull secret at .* is not valid JSON/);
+    });
+
+    it('fails the operation and releases the folder when the temporary authfile cannot be written', async () => {
+      await fs.promises.mkdir(runDir, { recursive: true });
+      await fs.promises.chmod(runDir, 0o500);
+      let res;
+      try {
+        res = await request.post('/api/operations/start').send({
+          configFile: CONFIG, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'no-authfile',
+        });
+      } finally {
+        await fs.promises.chmod(runDir, 0o755);
+      }
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Failed to prepare registry credentials');
+      const again = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'no-authfile' });
+      expect(again.status).toBe(200);
+      await waitForCompletion(again.body.operationId);
+    });
+
+    // An unwritable log folder must fail the start cleanly, not crash the server
+    // with an unhandled stream error and leave the folder claimed.
+    it('fails the start and cleans up when the operation log cannot be created', async () => {
+      const logsDir = path.join(storageDir, 'logs');
+      await fs.promises.chmod(logsDir, 0o500);
+      let res;
+      try {
+        res = await request.post('/api/operations/start').send({
+          configFile: CONFIG, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'no-log',
+        });
+        expect(res.status).toBe(500);
+        expect(res.body.error).toBe('Failed to create operation log');
+        const leftovers = (await fs.promises.readdir(runDir)).filter((f) => f.startsWith('authfile-'));
+        expect(leftovers).toEqual([]);
+      } finally {
+        await fs.promises.chmod(logsDir, 0o755);
+      }
+      const again = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'no-log' });
+      expect(again.status).toBe(200);
+      await waitForCompletion(again.body.operationId);
+    });
+
+    it('fails the operation, removes the authfile, and releases the folder when oc-mirror cannot run', async () => {
+      const emptyBin = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'no-oc-mirror-'));
+      const savedPath = process.env.PATH;
+      process.env.PATH = emptyBin;
+      let res;
+      try {
+        res = await request.post('/api/operations/start').send({
+          configFile: CONFIG, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'no-binary',
+        });
+        expect(res.status).toBe(200);
+        const op = await waitForCompletion(res.body.operationId);
+        expect(op.status).toBe('failed');
+      } finally {
+        process.env.PATH = savedPath;
+        await fs.promises.rm(emptyBin, { recursive: true, force: true });
+      }
+      expect(await fs.promises.access(path.join(runDir, `authfile-${res.body.operationId}.json`)).then(() => true, () => false)).toBe(false);
+      const again = await request.post('/api/operations/start').send({ configFile: CONFIG, mirrorDestinationSubdir: 'no-binary' });
+      expect(again.status).toBe(200);
+      await waitForCompletion(again.body.operationId);
+    });
+  });
+
+  // Without SIGKILL, a process that ignores SIGTERM keeps the folder and the
+  // temporary authfile (which holds the pull secret) until it exits on its own.
+  it('force-kills a run that ignores SIGTERM so the folder and authfile are released', async () => {
+    process.env.OC_MIRROR_SLEEP = '60';
+    process.env.OC_MIRROR_IGNORE_TERM = '1';
+    const res = await request.post('/api/operations/start').send({
+      configFile: CONFIG, mode: 'mirrorToMirror', destinationRegistry: 'reg.example.com', mirrorDestinationSubdir: 'stubborn',
+    });
+    expect(res.status).toBe(200);
+    await readArgs();
+    await request.post(`/api/operations/${res.body.operationId}/stop`);
+    const op = await waitFor(async () => {
+      const list = await request.get('/api/operations');
+      const found = list.body.find((o: { id: string }) => o.id === res.body.operationId);
+      return found && found.status !== 'running' ? found : undefined;
+    }, 10000);
+    expect(op.status).toBe('stopped');
+    expect(await fs.promises.access(path.join(runDir, `authfile-${res.body.operationId}.json`)).then(() => true, () => false)).toBe(false);
+  }, 20000);
 });
