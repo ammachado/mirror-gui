@@ -34,7 +34,8 @@ describe('Same-origin API access', () => {
       .set('Origin', 'https://evil.example')
       .set('Content-Type', 'text/plain')
       .send(JSON.stringify({ configFile: 'any.yaml', mode: 'mirrorToMirror', destinationRegistry: 'evil.example/loot' }));
-    expect(res.status).not.toBe(200);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/application\/json/);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
     expect((await request.get('/api/operations')).body.length).toBe(before);
   });

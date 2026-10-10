@@ -1680,6 +1680,10 @@ app.get('/api/operations/history', async (req: Request, res: Response) => {
 });
 
 app.post('/api/operations/start', async (req: Request, res: Response) => {
+  // Only JSON is parsed; anything else (such as a cross-site text/plain POST) is refused.
+  if (!req.is('application/json') || typeof req.body !== 'object' || req.body === null) {
+    return res.status(400).json({ error: 'Request body must be application/json' });
+  }
   try {
     const {
       configFile,

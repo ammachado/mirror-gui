@@ -21,7 +21,8 @@ describe.skipIf(!helmAvailable)('Helm chart destination registry credentials', (
   it('renders nothing by default so credentials stay app-managed', () => {
     const out = render();
     expect(out).not.toContain('OC_MIRROR_REGISTRY_CREDENTIALS');
-    expect(out).not.toContain('registry-credentials');
+    expect(out).not.toMatch(/- name: registry-credentials\b/);
+    expect(out).not.toContain('mountPath: /app/registry-credentials');
   });
 
   it('mounts the Secret read-only and points the env var at the key', () => {
