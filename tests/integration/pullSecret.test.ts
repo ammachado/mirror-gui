@@ -30,6 +30,13 @@ describe('Pull Secret API', () => {
     });
   });
 
+  it('does not grant cross-origin access to pull-secret content', async () => {
+    const res = await request
+      .get('/api/pull-secret/content')
+      .set('Origin', 'https://untrusted.example');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
   describe('POST /api/pull-secret', () => {
     it('rejects empty content', async () => {
       const res = await request

@@ -123,12 +123,18 @@ describe('Operations API', () => {
   });
 
   describe('DELETE /api/operations/:id', () => {
-    it('returns success for any id', async () => {
+    it('returns success for a valid operation ID', async () => {
       const res = await request.delete(
         '/api/operations/00000000-0000-0000-0000-000000000000'
       );
       expect(res.status).toBe(200);
       expect(res.body.message).toContain('success');
+    });
+
+    it('rejects path traversal IDs', async () => {
+      const res = await request.delete('/api/operations/%2e%2e%2fcatalog-data%2fcatalog-index');
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Invalid operation ID');
     });
   });
 

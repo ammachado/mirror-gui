@@ -8,6 +8,7 @@ const storageDir = path.join(tempRoot, 'data');
 process.env.VITEST = 'true';
 process.env.STORAGE_DIR = storageDir;
 process.env.OC_MIRROR_AUTHFILE = path.join(storageDir, 'pull-secret.json');
+process.env.OC_MIRROR_CATALOG_DATA_DIR = path.resolve(process.cwd(), 'tests/fixtures/catalog-data');
 
 export async function ensureTestDirs(): Promise<void> {
   const dirs = [

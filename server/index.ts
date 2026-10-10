@@ -586,7 +586,7 @@ async function getSystemHealth(): Promise<string> {
 
 let preFetchedCatalogData: PreFetchedCatalogData | null = null;
 const RUNTIME_CATALOG_DIR = path.join(STORAGE_DIR, 'catalog-data');
-const BUILTIN_CATALOG_DIR = path.join(__dirname, '../catalog-data');
+const BUILTIN_CATALOG_DIR = process.env.OC_MIRROR_CATALOG_DATA_DIR || path.join(__dirname, '../catalog-data');
 
 async function resolveCatalogDataDir(): Promise<string> {
   const runtimeIndex = path.join(RUNTIME_CATALOG_DIR, 'catalog-index.json');
@@ -1052,7 +1052,8 @@ app.post('/api/pull-secret', async (req: Request, res: Response) => {
       return;
     }
 
-    await fsp.writeFile(AUTHFILE_PATH, content, 'utf8');
+    await fsp.writeFile(AUTHFILE_PATH, content, { encoding: 'utf8', mode: 0o600 });
+    await fsp.chmod(AUTHFILE_PATH, 0o600);
     pullSecretPath = AUTHFILE_PATH;
     pullSecretDetected = true;
     console.log(`Pull secret saved to: ${AUTHFILE_PATH}`);
@@ -1287,6 +1288,14 @@ app.post('/api/config/upload', async (req: Request, res: Response) => {
       return res.status(400).json({ error: `Invalid YAML: ${(yamlError as Error).message}` });
     }
 
+    if (
+      typeof filename !== 'string' ||
+      filename !== path.basename(filename) ||
+      filename.includes('..') || filename.includes('/') || filename.includes('\\')
+    ) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
     const finalFilename = filename.endsWith('.yaml') || filename.endsWith('.yml')
       ? filename
       : `${filename}.yaml`;
@@ -1298,6 +1307,7 @@ app.post('/api/config/upload', async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'Configuration file already exists' });
     } catch { /* file does not exist, proceed */ }
 
+    await fsp.mkdir(CONFIGS_DIR, { recursive: true });
     await fsp.writeFile(filepath, content);
     res.json({ message: 'Configuration uploaded successfully', filename: finalFilename });
   } catch (error: unknown) {
@@ -1673,6 +1683,13 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       destinationRegistry,
       skipDestTlsVerify,
     } = req.body;
+    if (
+      typeof configFile !== 'string' ||
+      configFile !== path.basename(configFile) ||
+      !/\.(?:ya?ml)$/i.test(configFile)
+    ) {
+      return res.status(400).json({ error: 'Invalid configuration filename' });
+    }
     const operationId = uuidv4();
     const configPath = path.join(CONFIGS_DIR, configFile);
 
@@ -2093,6 +2110,10 @@ app.post('/api/operations/:id/stop', async (req: Request, res: Response) => {
 app.delete('/api/operations/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) {
+      return res.status(400).json({ error: 'Invalid operation ID' });
+    }
+
     const filename = `${id}.json`;
     const filepath = path.join(OPERATIONS_DIR, filename);
 
