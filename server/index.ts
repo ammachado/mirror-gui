@@ -1759,7 +1759,7 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
 
     const mirrorUrl = pathToFileURL(mirrorPath).href;
 
-  const child = spawn('oc-mirror', [
+    const ocMirrorArgs = [
       '--v2',
       '--config', configPath,
       '--dest-tls-verify=false',
@@ -1768,7 +1768,12 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       '--authfile', AUTHFILE_PATH,
       ...additionalArgs,
       mirrorUrl,
-    ], {
+    ];
+
+    const quoteArg = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
+    logStream.write(`$ oc-mirror ${ocMirrorArgs.map(quoteArg).join(' ')}\n`);
+
+    const child = spawn('oc-mirror', ocMirrorArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: RUN_DIR,
     });
