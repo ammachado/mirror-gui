@@ -336,6 +336,66 @@ Upload a YAML configuration file.
 }
 ```
 
+#### POST /api/config/from-registry
+Reconstruct an `ImageSetConfiguration` from an existing oc-mirror v2 registry. Lists OpenShift release versions from `<namespace>/openshift/release-images` and operator packages and channels from the catalog index images found in the registry. Nothing is saved; pass the returned `yaml` to `POST /api/config/save` to keep it.
+
+Credentials come from the configured pull secret (entry matching `registry`); anonymous access is tried when there is none. TLS certificate verification is disabled for this call, matching mirror runs.
+
+**Request Body:**
+```json
+{
+  "registry": "mirror.example.com:8443",
+  "namespace": "ocp4",
+  "catalogs": ["ocp4/redhat/redhat-operator-index:v4.16"],
+  "sourceCatalogPrefix": "registry.redhat.io/redhat"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `registry` | yes | `host` or `host:port`, no scheme or path |
+| `namespace` | no | Repository path prefix, e.g. `ocp4` |
+| `catalogs` | no | Extra `<repository>:<tag>` catalog images (relative to the registry) for registries that hide `/v2/_catalog` and use non-standard names |
+| `sourceCatalogPrefix` | no | Rewrites emitted `catalog:` refs to this source prefix, e.g. `registry.redhat.io/redhat`; default is the mirror's own refs |
+
+**Response:**
+```json
+{
+  "yaml": "kind: ImageSetConfiguration\n...",
+  "config": {
+    "kind": "ImageSetConfiguration",
+    "apiVersion": "mirror.openshift.io/v2alpha1",
+    "mirror": {
+      "platform": {
+        "channels": [{ "name": "stable-4.16", "type": "ocp", "minVersion": "4.16.1", "maxVersion": "4.16.9" }],
+        "architectures": ["amd64"],
+        "graph": true
+      },
+      "operators": [
+        {
+          "catalog": "mirror.example.com:8443/ocp4/redhat/redhat-operator-index:v4.16",
+          "packages": [
+            { "name": "odf-operator", "channels": [{ "name": "stable-4.16", "minVersion": "4.16.2", "maxVersion": "4.16.8" }] }
+          ]
+        }
+      ]
+    }
+  },
+  "discovered": {
+    "releases": [{ "version": "4.16.1", "arch": "x86_64" }],
+    "catalogs": [{ "ref": "mirror.example.com:8443/ocp4/redhat/redhat-operator-index:v4.16", "packageCount": 1 }],
+    "warnings": ["Channel names (stable-X.Y) are assumed; the registry does not record which channel a release came from."]
+  }
+}
+```
+
+**Notes:**
+- Channel names are assumed to be `stable-<major.minor>`; check `warnings` for missing z-streams inside a range.
+- A catalog with no packages is skipped (an empty filter would mirror the entire catalog).
+- A catalog that fails to extract is skipped with a warning; the rest are still returned.
+
+**Errors:** `400` invalid input, `401` registry rejected the credentials, `404` no releases or catalogs found (body includes `warnings`), `502` registry unreachable.
+
 #### DELETE /api/config/delete/:filename
 Delete a configuration file.
 
