@@ -71,6 +71,10 @@ describe('parseReleaseTags', () => {
     ]);
     expect(ignored).toEqual(['latest', 'sha256-0123abcd.sig', '4.16.3']);
   });
+
+  it('accepts multi-arch release tags', () => {
+    expect(parseReleaseTags(['4.16.1-multi']).releases).toEqual([{ version: '4.16.1', arch: 'multi' }]);
+  });
 });
 
 describe('listTags', () => {
@@ -85,6 +89,16 @@ describe('listTags', () => {
   it('returns null when the repository does not exist', async () => {
     const get = createFakeRegistry({ repos: {} });
     expect(await listTags(get, 'ns/missing')).toBeNull();
+  });
+
+  it('throws RegistryHttpError when a 200 response is not JSON', async () => {
+    const get: RegistryGet = async () => ({
+      ok: true,
+      status: 200,
+      header: () => null,
+      text: async () => '<html>captive portal</html>',
+    });
+    await expect(listTags(get, 'ns/repo')).rejects.toBeInstanceOf(RegistryHttpError);
   });
 
   it('throws RegistryHttpError on other failures', async () => {
@@ -195,6 +209,21 @@ describe('discoverRegistryContents', () => {
     expect(call).toEqual(expect.arrayContaining(['image', 'extract', '--insecure', '--registry-config=/pull/secret.json']));
     expect(call?.some((a) => a.startsWith('--path=/configs/:') && a.endsWith('/configs'))).toBe(true);
     expect(await fs.promises.readdir(tmpRoot)).toEqual([]);
+  });
+
+  it('does not extract a latest tag, which would duplicate a versioned catalog', async () => {
+    const { deps, ocCalls } = makeDeps({
+      get: createFakeRegistry({
+        repos: { 'ocp4/redhat/redhat-operator-index': ['v4.16', 'latest'] },
+      }),
+    });
+    const result = await discoverRegistryContents(deps, {
+      registry: 'mirror.example.com:8443',
+      namespace: 'ocp4',
+      catalogs: [],
+    });
+    expect(result.catalogs.map((c) => c.tag)).toEqual(['v4.16']);
+    expect(ocCalls).toHaveLength(1);
   });
 
   it('adds manual catalogs and does not duplicate discovered ones', async () => {

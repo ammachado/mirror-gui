@@ -142,3 +142,32 @@ describe('createRegistryClient', () => {
     expect(fetchFn.requests[0].headers).toEqual({});
   });
 });
+
+describe('createRegistryClient link handling', () => {
+  it('sends credentials only to the registry host, even for absolute Link URLs', async () => {
+    const fetchFn = fakeFetch(() => ({ status: 200 }));
+    const get = createRegistryClient('mirror.example.com:8443', 'dXNlcjpwdw==', fetchFn);
+
+    await get('/v2/ns/repo/tags/list?n=1000');
+    await get('https://other.example.net/v2/ns/repo/tags/list?last=b');
+    await get('v2/ns/repo/tags/list?last=c');
+
+    expect(fetchFn.requests.map((r) => r.url)).toEqual([
+      'https://mirror.example.com:8443/v2/ns/repo/tags/list?n=1000',
+      'https://other.example.net/v2/ns/repo/tags/list?last=b',
+      'https://mirror.example.com:8443/v2/ns/repo/tags/list?last=c',
+    ]);
+    expect(fetchFn.requests[0].headers.Authorization).toBe('Basic dXNlcjpwdw==');
+    expect(fetchFn.requests[1].headers.Authorization).toBeUndefined();
+    expect(fetchFn.requests[2].headers.Authorization).toBe('Basic dXNlcjpwdw==');
+  });
+
+  it('refuses a non-https Link URL instead of crashing in the transport', async () => {
+    const fetchFn = fakeFetch(() => ({ status: 200 }));
+    const get = createRegistryClient('mirror.example.com', undefined, fetchFn);
+    await expect(get('http://mirror.example.com/v2/x/tags/list')).rejects.toMatchObject({
+      name: 'RegistryHttpError',
+    });
+    expect(fetchFn.requests).toEqual([]);
+  });
+});

@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile);
 
 // oc-mirror v2 layout constants. Kept together so a layout mismatch is a one-line fix.
 export const RELEASE_IMAGES_REPO = 'openshift/release-images';
-export const RELEASE_TAG_RE = /^(\d+\.\d+\.\d+)-(x86_64|aarch64|ppc64le|s390x)$/;
+export const RELEASE_TAG_RE = /^(\d+\.\d+\.\d+)-(x86_64|aarch64|ppc64le|s390x|multi)$/;
 export const STANDARD_CATALOG_NAMES = [
   'redhat-operator-index',
   'certified-operator-index',
@@ -114,8 +114,13 @@ async function listPaged(get: RegistryGet, firstPath: string, key: 'tags' | 'rep
       if (page === 0) return { ok: false, status: res.status };
       throw new RegistryHttpError(res.status, `Registry returned HTTP ${res.status} while listing ${firstPath}`);
     }
-    const body = JSON.parse(await res.text()) as Record<string, string[] | null>;
-    items.push(...(body[key] ?? []));
+    let body: Record<string, string[] | null> | null;
+    try {
+      body = JSON.parse(await res.text()) as Record<string, string[] | null> | null;
+    } catch {
+      throw new RegistryHttpError(502, `Registry returned a non-JSON response for ${next}`);
+    }
+    items.push(...(body?.[key] ?? []));
     next = parseNextLink(res.header('link'));
   }
   return { ok: true, items };
@@ -141,7 +146,7 @@ export function parseReleaseTags(tags: string[]): { releases: ReleaseTag[]; igno
 }
 
 function isCatalogTag(tag: string): boolean {
-  return !COSIGN_TAG_RE.test(tag);
+  return tag !== 'latest' && !COSIGN_TAG_RE.test(tag);
 }
 
 /** Catalog index repositories: from /v2/_catalog when allowed, else by probing standard names. */
