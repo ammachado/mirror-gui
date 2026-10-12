@@ -1952,6 +1952,9 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       additionalArgs,
     });
 
+    const quoteArg = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
+    logStream.write(`$ oc-mirror ${ocMirrorArgs.map(quoteArg).join(' ')}\n`);
+
     let child: ChildProcess;
     try {
       child = spawn('oc-mirror', ocMirrorArgs, {
