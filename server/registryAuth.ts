@@ -160,12 +160,20 @@ export function createRegistryClient(
   let authorization = authBase64 ? `Basic ${authBase64}` : undefined;
 
   return async (pathOrUrl) => {
-    const url = pathOrUrl.startsWith('/') ? `https://${registry}${pathOrUrl}` : pathOrUrl;
+    // Link headers may carry absolute or host-relative URLs; resolve them against the registry.
+    const url = new URL(pathOrUrl, `https://${registry}`);
+    if (url.protocol !== 'https:') {
+      throw new RegistryHttpError(502, `Refusing non-https registry URL ${url.origin}`);
+    }
+    // Credentials belong to the registry; never forward them to another host.
+    const sameHost = url.host === new URL(`https://${registry}`).host;
     const send = () =>
-      fetchFn(url, { headers: authorization ? { Authorization: authorization } : {} });
+      fetchFn(url.toString(), {
+        headers: sameHost && authorization ? { Authorization: authorization } : {},
+      });
 
     const res = await send();
-    if (res.status !== 401) return res;
+    if (res.status !== 401 || !sameHost) return res;
 
     const challenge = parseAuthChallenge(res.header('www-authenticate'));
     if (!challenge) return res;
