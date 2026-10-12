@@ -11,7 +11,14 @@ import compression from 'compression';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getChannelObjectsFromGeneratedOperator } from './catalogChannels.js';
 import { isPathAvailable } from './pathAvailability.js';
-import { authenticateRegistry, verifiedFetch } from './registryAuth.js';
+import { authenticateRegistry, verifiedFetch, RegistryHttpError } from './registryAuth.js';
+import {
+  createDefaultDeps,
+  discoverRegistryContents,
+  parseFromRegistryRequest,
+  type DiscoveryDeps,
+} from './registryDiscovery.js';
+import { buildImageSetConfig } from './imagesetFromRegistry.js';
 import {
   type ChannelObject,
   parseOcMirrorVersion,
@@ -785,6 +792,7 @@ const operatorCache: OperatorCache = {
 export const __routeTestHooks = {
   failNextCatalogsGet: false,
   failNextOperatorsGet: false,
+  registryDeps: undefined as DiscoveryDeps | undefined,
 };
 
 function isCacheValid(): boolean {
@@ -1222,6 +1230,65 @@ app.post('/api/config/upload', async (req: Request, res: Response) => {
   } catch (error: unknown) {
     console.error('Error uploading configuration:', error);
     res.status(500).json({ error: 'Failed to upload configuration' });
+  }
+});
+
+app.post('/api/config/from-registry', async (req: Request, res: Response) => {
+  const parsed = parseFromRegistryRequest(req.body);
+  if (!parsed.ok) {
+    return res.status(400).json({ error: parsed.error });
+  }
+  const { registry, sourceCatalogPrefix } = parsed.value;
+
+  try {
+    let authBase64: string | undefined;
+    if (pullSecretDetected && pullSecretPath) {
+      const pullSecret = JSON.parse(await fsp.readFile(pullSecretPath, 'utf8'));
+      authBase64 = pullSecret.auths?.[registry]?.auth;
+    }
+
+    const injected = process.env.VITEST === 'true' ? __routeTestHooks.registryDeps : undefined;
+    const deps = injected ?? createDefaultDeps({
+      registry,
+      authBase64,
+      appRootDir: APP_ROOT_DIR,
+      registryConfigPath: pullSecretDetected ? pullSecretPath : null,
+    });
+
+    const discovery = await discoverRegistryContents(deps, parsed.value);
+    if (discovery.releases.length === 0 && discovery.catalogs.length === 0) {
+      return res.status(404).json({
+        error: 'No OpenShift releases or operator catalogs found in the registry',
+        warnings: discovery.warnings,
+      });
+    }
+
+    const { config, warnings: buildWarnings } = buildImageSetConfig({
+      releases: discovery.releases,
+      catalogs: discovery.catalogs,
+      sourceCatalogPrefix,
+    });
+
+    res.json({
+      yaml: YAML.stringify(config),
+      config,
+      discovered: {
+        releases: discovery.releases,
+        catalogs: discovery.catalogs.map((c) => ({ ref: c.ref, packageCount: c.operators.length })),
+        warnings: [...discovery.warnings, ...buildWarnings],
+      },
+    });
+  } catch (error: unknown) {
+    console.error(`Error discovering configuration from registry ${registry}:`, error);
+    if (error instanceof RegistryHttpError) {
+      const status = error.status === 401 || error.status === 403 ? 401 : 502;
+      return res.status(status).json({ error: error.message });
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    res.status(code ? 502 : 500).json({
+      error: code ? `Could not reach registry ${registry}` : 'Failed to discover configuration from registry',
+      details: (error as Error).message,
+    });
   }
 });
 
