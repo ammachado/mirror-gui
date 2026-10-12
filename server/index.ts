@@ -11,6 +11,7 @@ import compression from 'compression';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getChannelObjectsFromGeneratedOperator } from './catalogChannels.js';
 import { isPathAvailable } from './pathAvailability.js';
+import { authenticateRegistry, verifiedFetch } from './registryAuth.js';
 import {
   type ChannelObject,
   parseOcMirrorVersion,
@@ -2128,45 +2129,17 @@ app.post('/api/registries/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    const url = `https://${registry}/v2/`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Basic ${authData.auth}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
     const sendResult = (result: { registry: string; status: string; error?: string }) => {
       registryVerificationCache[result.registry] = { status: result.status, error: result.error };
       res.json(result);
     };
 
-    if (response.ok || response.status === 200) {
+    const result = await authenticateRegistry(registry, authData.auth, verifiedFetch);
+    if (result.ok) {
       sendResult({ registry, status: 'authenticated' });
       return;
     }
-
-    if (response.status === 401) {
-      const wwwAuth = response.headers.get('www-authenticate') || '';
-      const realmMatch = wwwAuth.match(/realm="([^"]+)"/);
-      const serviceMatch = wwwAuth.match(/service="([^"]+)"/);
-
-      if (realmMatch) {
-        const tokenUrl = new URL(realmMatch[1]);
-        if (serviceMatch) tokenUrl.searchParams.set('service', serviceMatch[1]);
-        const tokenRes = await fetch(tokenUrl.toString(), {
-          headers: { 'Authorization': `Basic ${authData.auth}` },
-          signal: AbortSignal.timeout(10000),
-        });
-        if (tokenRes.ok) {
-          sendResult({ registry, status: 'authenticated' });
-          return;
-        }
-        const body = await tokenRes.text().catch(() => '');
-        sendResult({ registry, status: 'failed', error: `Authentication failed (${tokenRes.status}): ${body.slice(0, 200)}` });
-        return;
-      }
-    }
-
-    sendResult({ registry, status: 'failed', error: `HTTP ${response.status}` });
+    sendResult({ registry, status: 'failed', error: result.error });
   } catch (error: unknown) {
     console.error(`Error verifying registry ${req.body?.registry}:`, error);
     const reg = req.body?.registry;
