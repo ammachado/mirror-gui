@@ -111,6 +111,10 @@ describe('POST /api/config/from-registry', () => {
       .post('/api/config/upload')
       .send({ filename: 'from-registry-upload', content: res.body.yaml });
     expect(uploaded.status).toBe(200);
+
+    // The configs directory persists between runs; leave it as we found it.
+    await request.delete(`/api/config/delete/${saved.body.filename}`);
+    await request.delete(`/api/config/delete/${uploaded.body.filename}`);
   });
 
   it('rewrites catalog refs when sourceCatalogPrefix is given', async () => {
