@@ -294,6 +294,9 @@ const APP_ROOT_DIR = process.env.OC_MIRROR_WORKDIR || path.resolve(__dirname, '.
 // Working directory for spawned tools. oc-mirror v2 writes a logs/ directory relative to
 // its cwd, and APP_ROOT_DIR is read-only when running under a restricted OpenShift SCC.
 const RUN_DIR = path.resolve(path.join(STORAGE_DIR, 'run'));
+// containers/image writes signatures under $XDG_DATA_HOME (default $HOME/.local/share), and
+// HOME is read-only under a restricted SCC, so point it at writable storage.
+const RUN_DATA_HOME = path.join(RUN_DIR, 'xdg-data');
 const DEV_CACHE_DIR = path.join(APP_ROOT_DIR, '.local-run', 'vite');
 const MIRROR_BASE_DIR = path.resolve(process.env.OC_MIRROR_BASE_MIRROR_DIR || path.join(STORAGE_DIR, 'mirrors'));
 const DEFAULT_MIRROR_DIR = path.join(MIRROR_BASE_DIR, 'default');
@@ -1960,6 +1963,7 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       child = spawn('oc-mirror', ocMirrorArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: RUN_DIR,
+        env: { ...process.env, XDG_DATA_HOME: RUN_DATA_HOME },
       });
     } catch (error: unknown) {
       finalizeLogStream();
@@ -2742,6 +2746,7 @@ app.post('/api/catalogs/sync', async (_req: Request, res: Response) => {
     PULL_SECRET_PATH: AUTHFILE_PATH,
     SCRIPT_DIR: APP_ROOT_DIR,
     MAX_PARALLEL_JOBS: '3',
+    XDG_DATA_HOME: RUN_DATA_HOME,
   };
 
   catalogSyncProcess = spawn('bash', [syncScriptPath], {
