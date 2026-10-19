@@ -86,6 +86,14 @@ export default defineConfig(
           selector: 'TemplateLiteral > TemplateElement:first-child[value.raw=/^\\/api(\\/|$)/]',
           message: 'Do not hardcode /api paths; add a client function in packages/ui/src/api.',
         },
+        {
+          selector: 'JSXAttribute[name.name="to"] Literal[value=/^\\//], JSXAttribute[name.name="to"] TemplateLiteral > TemplateElement:first-child[value.raw=/^\\//]',
+          message: 'Do not hardcode routes; build them with host.pagePath() so each host can mount the pages under its own prefix.',
+        },
+        {
+          selector: 'CallExpression[callee.name="navigate"][arguments.0.value=/^\\//], CallExpression[callee.name="navigate"] > TemplateLiteral > TemplateElement:first-child[value.raw=/^\\//]',
+          message: 'Do not hardcode routes; build them with host.pagePath() so each host can mount the pages under its own prefix.',
+        },
       ],
     },
   },
