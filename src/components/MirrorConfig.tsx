@@ -207,8 +207,8 @@ const validateVersionRange = (
           message: `No versions available in range ${minVersion} to ${maxVersion}`,
         };
       }
+      return { isValid: true, message: '' };
     }
-    return { isValid: true, message: '' };
   }
 
   const minNum = minVersion ? versionToNumber(minVersion) : 0;
@@ -1578,7 +1578,7 @@ const MirrorConfig: React.FC = () => {
           {Object.entries(validationErrors).filter(([key]) => !key.includes('-warning') && !key.startsWith('yaml-')).length > 0 && (
             <Alert variant="danger" isInline title="Configuration has errors" className="pf-v6-u-mb-md">
               <ul style={{ margin: 0 }} className="pf-v6-u-pl-md">
-                {Object.entries(validationErrors).filter(([key]) => !key.includes('-warning') && !key.startsWith('yaml-')).map(([, msg], i) => (
+                {Array.from(new Set(Object.entries(validationErrors).filter(([key]) => !key.includes('-warning') && !key.startsWith('yaml-')).map(([, msg]) => msg))).map((msg, i) => (
                   <li key={i}>{msg}</li>
                 ))}
               </ul>
