@@ -42,6 +42,7 @@ export interface OptionalFlagsPayload {
   imageTimeout?: string;
   retryDelay?: string;
   retryTimes?: number;
+  maxNestedPaths?: number;
 }
 
 export interface StartOperationRequest {
