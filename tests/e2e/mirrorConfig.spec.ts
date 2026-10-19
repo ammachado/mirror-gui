@@ -47,7 +47,7 @@ test.describe('Mirror Configuration', () => {
     const operatorSearch = page.getByPlaceholder('Type to search operators...');
     await operatorSearch.fill('advanced-cluster-management');
     await page.getByRole('option', { name: 'advanced-cluster-management' }).click();
-    await page.getByRole('button', { name: 'release-2.16' }).click();
+    await page.getByRole('button', { name: 'release-2.16', exact: true }).click();
 
     await expect(page.getByText('Min Version', { exact: true })).toBeVisible();
     await expect(page.getByText('Max Version', { exact: true })).toBeVisible();
@@ -76,7 +76,7 @@ test.describe('Mirror Configuration', () => {
     const operatorSearch = page.getByPlaceholder('Type to search operators...');
     await operatorSearch.fill('advanced-cluster-management');
     await page.getByRole('option', { name: 'advanced-cluster-management' }).click();
-    await page.getByRole('button', { name: 'release-2.16' }).click();
+    await page.getByRole('button', { name: 'release-2.16', exact: true }).click();
     // Rendering the channel row loads its catalog versions, which the range check must not short-circuit on.
     await expect(page.getByPlaceholder('Min version')).toBeVisible();
 
