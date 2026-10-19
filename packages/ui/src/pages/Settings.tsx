@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import axios from 'axios';
 import {
   Card,
   CardBody,
@@ -47,61 +46,22 @@ import {
   CopyIcon,
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { useAlerts } from '../AlertContext';
-
-interface RegistryEntry {
-  registry: string;
-  username: string;
-  hasAuth: boolean;
-  status?: 'authenticated' | 'failed' | 'verifying' | 'not_verified';
-  error?: string;
-}
-
-interface DestinationCredential {
-  registry: string;
-  username: string;
-  status?: RegistryEntry['status'];
-  error?: string;
-}
-
-interface SystemInfo {
-  ocMirrorVersion: string;
-  systemArchitecture: string;
-  availableDiskSpace: string | number;
-  totalDiskSpace: string | number;
-  cacheDir: string;
-  hostCacheDir: string;
-  cacheSizeBytes: number;
-}
-
-interface CatalogSyncDiffEntry {
-  catalog: string;
-  newOperators: string[];
-  removedOperators: string[];
-  updatedOperators: { name: string; addedVersions: string[] }[];
-}
+import { useApi } from '../api';
+import { ApiError, useHost } from '../host';
+import type {
+  CatalogInfo,
+  CatalogSyncStatus,
+  DestinationCredential,
+  PullSecretStatus,
+  RegistryEntry,
+  SystemInfo,
+} from '../api/types';
 
 /** Bash-safe single-quoted string for CACHE_DIR=... */
 function shellSingleQuote(value: string): string {
   const sq = '\'';
   const escaped = value.split(sq).join(`${sq}\\${sq}${sq}`);
   return `${sq}${escaped}${sq}`;
-}
-
-interface CatalogSyncStatus {
-  status: 'idle' | 'running' | 'completed' | 'failed';
-  lastSyncTime: string | null;
-  syncStartTime: string | null;
-  successCount: number;
-  failedCount: number;
-  totalCount: number;
-  completedCatalogs: number;
-  currentCatalog: string | null;
-  error: string | null;
-  logs: string[];
-  diff: CatalogSyncDiffEntry[];
-  /** True when runtime synced catalog data exists (same probe as clear sync). */
-  hasRuntimeSyncData?: boolean;
 }
 
 const RegistryStatusLabel = ({ status, error }: { status?: RegistryEntry['status']; error?: string }) => (
@@ -118,13 +78,15 @@ const RegistryStatusLabel = ({ status, error }: { status?: RegistryEntry['status
 );
 
 const SettingsPage: React.FC = () => {
-  const { addSuccessAlert, addDangerAlert } = useAlerts();
+  const api = useApi();
+  const host = useHost();
 
   const [systemInfo, setSystemInfo] = useState<SystemInfo>({
     ocMirrorVersion: '',
     systemArchitecture: '',
-    availableDiskSpace: '',
-    totalDiskSpace: '',
+    availableDiskSpace: 0,
+    totalDiskSpace: 0,
+    hostDataDir: '',
     cacheDir: '',
     hostCacheDir: '',
     cacheSizeBytes: 0,
@@ -139,7 +101,7 @@ const SettingsPage: React.FC = () => {
   }, [searchParams]);
   const [pullSecretContent, setPullSecretContent] = useState('');
   const [pullSecretFilename, setPullSecretFilename] = useState('');
-  const [pullSecretStatus, setPullSecretStatus] = useState<{ detected: boolean; path: string | null }>({ detected: false, path: null });
+  const [pullSecretStatus, setPullSecretStatus] = useState<PullSecretStatus>({ detected: false, path: null });
   const [registries, setRegistries] = useState<RegistryEntry[]>([]);
   const [destinationCredentials, setDestinationCredentials] = useState<DestinationCredential[]>([]);
   const [credentialsManagedExternally, setCredentialsManagedExternally] = useState(false);
@@ -164,30 +126,30 @@ const SettingsPage: React.FC = () => {
   const [generatedRestartCommand, setGeneratedRestartCommand] = useState<string | null>(null);
   const [cacheChangeExpanded, setCacheChangeExpanded] = useState(false);
 
-  const [catalogDigests, setCatalogDigests] = useState<{ name: string; url: string; digest: string | null; syncedAt: string | null }[]>([]);
+  const [catalogDigests, setCatalogDigests] = useState<CatalogInfo[]>([]);
   const [digestsExpanded, setDigestsExpanded] = useState(false);
   /** Snapshot of digest by `catalogName:ocpVersion` taken when sync starts; used to label Updated vs Unchanged after sync. */
 
   const fetchCatalogDigests = useCallback(async () => {
     try {
-      const response = await axios.get('/api/catalogs');
-      setCatalogDigests(response.data);
+      const data = await api.listCatalogs();
+      setCatalogDigests(data);
     } catch {
       setCatalogDigests([]);
     }
-  }, []);
+  }, [api]);
 
 
   const fetchSyncStatus = useCallback(async () => {
     try {
-      const response = await axios.get('/api/catalogs/sync/status');
-      setCatalogSyncStatus(response.data);
-      if (response.data.status === 'running' && !syncPollRef.current) {
+      const data = await api.getCatalogSyncStatus();
+      setCatalogSyncStatus(data);
+      if (data.status === 'running' && !syncPollRef.current) {
         syncPollRef.current = setInterval(async () => {
           try {
-            const r = await axios.get('/api/catalogs/sync/status');
-            setCatalogSyncStatus(r.data);
-            if (r.data.status !== 'running' && syncPollRef.current) {
+            const r = await api.getCatalogSyncStatus();
+            setCatalogSyncStatus(r);
+            if (r.status !== 'running' && syncPollRef.current) {
               clearInterval(syncPollRef.current);
               syncPollRef.current = null;
             }
@@ -198,27 +160,27 @@ const SettingsPage: React.FC = () => {
         if (!elapsedTimerRef.current) {
           elapsedTimerRef.current = setInterval(() => setTick(t => t + 1), 1000);
         }
-      } else if (response.data.status !== 'running' && syncPollRef.current) {
+      } else if (data.status !== 'running' && syncPollRef.current) {
         clearInterval(syncPollRef.current);
         syncPollRef.current = null;
       }
     } catch (error) {
       console.error('Error fetching sync status:', error);
     }
-  }, []);
+  }, [api]);
 
   const startCatalogSync = async () => {
     try {
-      await axios.post('/api/catalogs/sync');
+      await api.startCatalogSync();
 
       setCatalogSyncStatus(prev => ({ ...prev, status: 'running', syncStartTime: new Date().toISOString(), logs: [], error: null, diff: [] }));
       syncPollRef.current = setInterval(fetchSyncStatus, 3000);
       setShowSyncLogs(false);
       if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
       elapsedTimerRef.current = setInterval(() => setTick(t => t + 1), 1000);
-    } catch (error: any) {
-      const msg = error.response?.data?.error || 'Failed to start catalog sync';
-      addDangerAlert(msg);
+    } catch (error) {
+      const msg = (error as ApiError).message;
+      host.notify('danger', msg);
     }
   };
 
@@ -239,11 +201,11 @@ const SettingsPage: React.FC = () => {
       }
     }
     if (prev === 'running' && curr === 'completed') {
-      addSuccessAlert(`Catalog sync completed: ${catalogSyncStatus.successCount}/${catalogSyncStatus.totalCount} catalogs successful`);
+      host.notify('success', `Catalog sync completed: ${catalogSyncStatus.successCount}/${catalogSyncStatus.totalCount} catalogs successful`);
       setDigestsExpanded(true);
       fetchCatalogDigests();
     } else if (prev === 'running' && curr === 'failed') {
-      addDangerAlert(`Catalog sync failed: ${catalogSyncStatus.error || 'Unknown error'}`);
+      host.notify('danger', `Catalog sync failed: ${catalogSyncStatus.error || 'Unknown error'}`);
     }
     prevSyncStatusRef.current = curr;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -255,13 +217,13 @@ const SettingsPage: React.FC = () => {
 
   const clearSyncData = async () => {
     try {
-      const response = await axios.delete('/api/catalogs/sync/data');
-      addSuccessAlert(response.data.message);
+      const data = await api.deleteCatalogSyncData();
+      host.notify('success', data.message);
       await fetchSyncStatus();
       await fetchCatalogDigests();
-    } catch (error: any) {
-      const msg = error.response?.data?.error || 'Failed to clear sync data';
-      addDangerAlert(msg);
+    } catch (error) {
+      const msg = (error as ApiError).message;
+      host.notify('danger', msg);
     }
   };
 
@@ -273,8 +235,8 @@ const SettingsPage: React.FC = () => {
 
   const fetchRegistries = async () => {
     try {
-      const response = await axios.get('/api/registries');
-      setRegistries(response.data.registries || []);
+      const data = await api.listRegistries();
+      setRegistries(data.registries || []);
     } catch (error) {
       console.error('Error fetching registries:', error);
     }
@@ -285,9 +247,9 @@ const SettingsPage: React.FC = () => {
       r.registry === registry ? { ...r, status: 'verifying' as const } : r,
     ));
     try {
-      const response = await axios.post('/api/registries/verify', { registry });
+      const data = await api.verifyRegistry(registry);
       setRegistries(prev => prev.map(r =>
-        r.registry === registry ? { ...r, status: response.data.status, error: response.data.error } : r,
+        r.registry === registry ? { ...r, status: data.status, error: data.error } : r,
       ));
     } catch {
       setRegistries(prev => prev.map(r =>
@@ -304,25 +266,25 @@ const SettingsPage: React.FC = () => {
 
   const fetchDestinationCredentials = async () => {
     try {
-      const response = await axios.get('/api/registry-credentials');
-      setDestinationCredentials(response.data.credentials || []);
-      setCredentialsManagedExternally(!!response.data.managedExternally);
-      setCredentialsPath(response.data.path || null);
-      setCredentialsError(response.data.error || null);
-    } catch (error: any) {
-      setCredentialsError(error.response?.data?.error || 'Failed to load destination registry credentials');
+      const data = await api.listRegistryCredentials();
+      setDestinationCredentials(data.credentials || []);
+      setCredentialsManagedExternally(!!data.managedExternally);
+      setCredentialsPath(data.path || null);
+      setCredentialsError(data.error || null);
+    } catch (error) {
+      setCredentialsError((error as ApiError).message);
     }
   };
 
   const saveDestinationCredential = async () => {
     setSavingCredential(true);
     try {
-      await axios.put('/api/registry-credentials', newCredential);
-      addSuccessAlert(`Credentials saved for ${newCredential.registry}`);
+      await api.saveRegistryCredential(newCredential);
+      host.notify('success', `Credentials saved for ${newCredential.registry}`);
       setNewCredential({ registry: '', username: '', password: '' });
       await fetchDestinationCredentials();
-    } catch (error: any) {
-      addDangerAlert(error.response?.data?.error || 'Failed to save credentials');
+    } catch (error) {
+      host.notify('danger', (error as ApiError).message);
     } finally {
       setSavingCredential(false);
     }
@@ -330,11 +292,11 @@ const SettingsPage: React.FC = () => {
 
   const deleteDestinationCredential = async (registry: string) => {
     try {
-      await axios.delete(`/api/registry-credentials/${encodeURIComponent(registry)}`);
-      addSuccessAlert(`Credentials removed for ${registry}`);
+      await api.deleteRegistryCredential(registry);
+      host.notify('success', `Credentials removed for ${registry}`);
       await fetchDestinationCredentials();
-    } catch (error: any) {
-      addDangerAlert(error.response?.data?.error || 'Failed to remove credentials');
+    } catch (error) {
+      host.notify('danger', (error as ApiError).message);
     }
   };
 
@@ -343,9 +305,9 @@ const SettingsPage: React.FC = () => {
       c.registry === registry ? { ...c, status: 'verifying' as const } : c,
     ));
     try {
-      const response = await axios.post('/api/registry-credentials/verify', { registry });
+      const data = await api.verifyRegistryCredential(registry);
       setDestinationCredentials(prev => prev.map(c =>
-        c.registry === registry ? { ...c, status: response.data.status, error: response.data.error } : c,
+        c.registry === registry ? { ...c, status: data.status, error: data.error } : c,
       ));
     } catch {
       setDestinationCredentials(prev => prev.map(c =>
@@ -356,13 +318,13 @@ const SettingsPage: React.FC = () => {
 
   const fetchPullSecretStatus = async () => {
     try {
-      const [statusRes, contentRes] = await Promise.all([
-        axios.get('/api/pull-secret/status'),
-        axios.get('/api/pull-secret/content'),
+      const [status, content] = await Promise.all([
+        api.getPullSecretStatus(),
+        api.getPullSecretContent(),
       ]);
-      setPullSecretStatus(statusRes.data);
-      if (contentRes.data.content) {
-        setPullSecretContent(contentRes.data.content);
+      setPullSecretStatus(status);
+      if (content.content) {
+        setPullSecretContent(content.content);
       }
     } catch (error) {
       console.error('Error fetching pull secret status:', error);
@@ -373,18 +335,18 @@ const SettingsPage: React.FC = () => {
     try {
       setLoading(true);
       if (!pullSecretContent.trim()) {
-        await axios.delete('/api/pull-secret');
-        addSuccessAlert('Pull secret removed successfully!');
+        await api.deletePullSecret();
+        host.notify('success', 'Pull secret removed successfully!');
       } else {
-        await axios.post('/api/pull-secret', { content: pullSecretContent });
-        addSuccessAlert('Pull secret saved successfully!');
+        await api.savePullSecret(pullSecretContent);
+        host.notify('success', 'Pull secret saved successfully!');
       }
       setPullSecretFilename('');
       await fetchPullSecretStatus();
       await fetchRegistries();
-    } catch (error: any) {
-      const msg = error.response?.data?.error || 'Failed to save pull secret';
-      addDangerAlert(msg);
+    } catch (error) {
+      const msg = (error as ApiError).message;
+      host.notify('danger', msg);
     } finally {
       setLoading(false);
     }
@@ -402,8 +364,8 @@ const SettingsPage: React.FC = () => {
 
   const fetchSystemInfo = async () => {
     try {
-      const response = await axios.get('/api/system/info');
-      setSystemInfo(response.data);
+      const data = await api.getSystemInfo();
+      setSystemInfo(data);
     } catch (error) {
       console.error('Error fetching system info:', error);
     }
@@ -412,7 +374,7 @@ const SettingsPage: React.FC = () => {
   const generateRestartCommand = () => {
     const trimmed = cacheHostPath.trim();
     if (!trimmed) {
-      addDangerAlert('Enter a host path for the cache directory.');
+      host.notify('danger', 'Enter a host path for the cache directory.');
       return;
     }
     const cmd = `CACHE_DIR=${shellSingleQuote(trimmed)} ./mirror-gui.sh --restart`;
@@ -423,7 +385,7 @@ const SettingsPage: React.FC = () => {
     if (!generatedRestartCommand) return;
     try {
       await navigator.clipboard.writeText(generatedRestartCommand);
-      addSuccessAlert('Command copied to clipboard');
+      host.notify('success', 'Command copied to clipboard');
     } catch {
       const textArea = document.createElement('textarea');
       textArea.value = generatedRestartCommand;
@@ -433,9 +395,9 @@ const SettingsPage: React.FC = () => {
       textArea.select();
       try {
         document.execCommand('copy');
-        addSuccessAlert('Command copied to clipboard');
+        host.notify('success', 'Command copied to clipboard');
       } catch {
-        addDangerAlert('Could not copy to clipboard');
+        host.notify('danger', 'Could not copy to clipboard');
       }
       document.body.removeChild(textArea);
     }
@@ -444,12 +406,12 @@ const SettingsPage: React.FC = () => {
   const cleanupCache = async () => {
     try {
       setLoading(true);
-      await axios.post('/api/cache/cleanup');
-      addSuccessAlert('Cache cleaned up successfully!');
+      await api.cleanupCache();
+      host.notify('success', 'Cache cleaned up successfully!');
       await fetchSystemInfo();
     } catch (error) {
       console.error('Error cleaning up cache:', error);
-      addDangerAlert('Failed to cleanup cache');
+      host.notify('danger', 'Failed to cleanup cache');
     } finally {
       setLoading(false);
     }
@@ -986,7 +948,7 @@ const SettingsPage: React.FC = () => {
                                         icon={<CopyIcon />}
                                         onClick={() => {
                                           navigator.clipboard.writeText(cat.digest || '');
-                                          addSuccessAlert('Digest copied');
+                                          host.notify('success', 'Digest copied');
                                         }}
                                         aria-label="Copy digest"
                                         style={{ padding: 0 }}
