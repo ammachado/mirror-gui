@@ -40,7 +40,7 @@ import redhatLogoDark from '/Logo-Red-Reverse.svg';
 const Dashboard = lazy(() => import('@mirror-gui/ui/pages/Dashboard'));
 const MirrorConfig = lazy(() => import('./components/MirrorConfig'));
 const MirrorOperations = lazy(() => import('./components/MirrorOperations'));
-const History = lazy(() => import('./components/History'));
+const History = lazy(() => import('@mirror-gui/ui/pages/History'));
 const Settings = lazy(() => import('./components/Settings'));
 
 interface NavRoute {

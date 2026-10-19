@@ -32,6 +32,9 @@ export interface OperationDetails {
   helmCharts?: number;
   configFile?: string;
   status?: string;
+  mode?: OperationMode;
+  destinationRegistry?: string;
+  clusterResourcesPath?: string;
 }
 
 export interface OptionalFlagsPayload {
