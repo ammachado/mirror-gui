@@ -1109,7 +1109,7 @@ const MirrorOperations: React.FC = () => {
                   title="Cannot read destination registry credentials"
                 >
                   {credentialsError} Operations that push to a registry will fail until the file is fixed.{' '}
-                  <Link to="/settings?tab=registry">Open registry settings</Link>.
+                  <Link to={`${host.pagePath('settings')}?tab=registry`}>Open registry settings</Link>.
                 </Alert>
               )}
               {missingCredentials && (
@@ -1121,7 +1121,7 @@ const MirrorOperations: React.FC = () => {
                 >
                   Neither the pull secret nor the destination registry credentials have an entry for this
                   host, so oc-mirror will push anonymously.{' '}
-                  <Link to="/settings?tab=registry">Add credentials in Settings</Link>.
+                  <Link to={`${host.pagePath('settings')}?tab=registry`}>Add credentials in Settings</Link>.
                 </Alert>
               )}
               <FormGroup fieldId="skip-dest-tls" className="pf-v6-u-mt-md">
