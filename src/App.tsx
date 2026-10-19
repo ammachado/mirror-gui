@@ -38,7 +38,7 @@ import redhatLogo from '/Logo-Red.svg';
 import redhatLogoDark from '/Logo-Red-Reverse.svg';
 
 const Dashboard = lazy(() => import('@mirror-gui/ui/pages/Dashboard'));
-const MirrorConfig = lazy(() => import('./components/MirrorConfig'));
+const MirrorConfig = lazy(() => import('@mirror-gui/ui/pages/MirrorConfig'));
 const MirrorOperations = lazy(() => import('@mirror-gui/ui/pages/MirrorOperations'));
 const History = lazy(() => import('@mirror-gui/ui/pages/History'));
 const Settings = lazy(() => import('@mirror-gui/ui/pages/Settings'));
