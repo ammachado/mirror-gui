@@ -60,12 +60,13 @@ describe('Operation modes', () => {
       path.join(fakeDir, 'oc-mirror'),
       [
         '#!/bin/sh',
-        'printf "%s\\n" "$@" > "$OC_MIRROR_ARGS_FILE"',
         'prev=""',
         'for arg in "$@"; do',
         '  if [ "$prev" = "--authfile" ] && [ -n "$OC_MIRROR_AUTH_COPY" ]; then cp "$arg" "$OC_MIRROR_AUTH_COPY"; fi',
         '  prev="$arg"',
         'done',
+        // Written after the authfile copy, so tests that wait for the args file can read the copy.
+        'printf "%s\\n" "$@" > "$OC_MIRROR_ARGS_FILE"',
         // OC_MIRROR_IGNORE_TERM simulates a process that ignores SIGTERM; the ignored
         // disposition survives exec.
         'if [ -n "$OC_MIRROR_IGNORE_TERM" ]; then trap "" TERM; fi',
