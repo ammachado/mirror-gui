@@ -67,7 +67,7 @@
     "@types/supertest": "^7.2.0",
     "@types/uuid": "^10",
     "@vitejs/plugin-react": "^6",
-    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/coverage-v8": "^5.0.5",
     "eslint": "^9.39.3",
     "eslint-plugin-react-hooks": "^7.0.1",
     "globals": "^17.4.0",
@@ -76,7 +76,7 @@
     "typescript": "5.8.2",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.3.0",
-    "vitest": "^4.1.0"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=22.0.0",
