@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties, type ReactNode } from 'react';
-import axios from 'axios';
 import {
   Card,
   CardBody,
@@ -69,7 +68,6 @@ import {
   SearchIcon,
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { useAlerts } from '../AlertContext';
 import { Link } from 'react-router-dom';
 import {
   OPERATION_MODES,
@@ -78,26 +76,10 @@ import {
   getRegistryHost,
   isRegistryTargetMode,
   type OperationMode,
-} from '../../server/operationModes';
-
-interface ConfigFile {
-  name: string;
-  size: string;
-}
-
-interface Operation {
-  id: string;
-  name: string;
-  configFile: string;
-  status: 'running' | 'success' | 'failed' | 'stopped';
-  startedAt: string;
-  completedAt?: string;
-  duration?: number;
-  mirrorDestination?: string;
-  errorMessage?: string;
-  mode?: OperationMode;
-  destinationRegistry?: string;
-}
+} from '@mirror-gui/shared/operationModes';
+import { useApi } from '../api';
+import { ApiError, useHost } from '../host';
+import type { ConfigFile, Operation, OptionalFlagsPayload } from '../api/types';
 
 interface OptionalFlags {
   removeSignatures: boolean;
@@ -110,14 +92,6 @@ interface OptionalFlags {
   retryTimesValue: string;
   maxNestedPathsEnabled: boolean;
   maxNestedPathsValue: string;
-}
-
-interface OptionalFlagsPayload {
-  removeSignatures?: boolean;
-  imageTimeout?: string;
-  retryDelay?: string;
-  retryTimes?: number;
-  maxNestedPaths?: number;
 }
 
 const DEFAULT_OPTIONAL_FLAGS: OptionalFlags = {
@@ -351,7 +325,8 @@ const adjustDigitField = (value: string, delta: number, min: number): string => 
 };
 
 const MirrorOperations: React.FC = () => {
-  const { addSuccessAlert, addDangerAlert, addWarningAlert } = useAlerts();
+  const api = useApi();
+  const host = useHost();
 
   const [operations, setOperations] = useState<Operation[]>([]);
   const [selectedConfig, setSelectedConfig] = useState('');
@@ -411,14 +386,13 @@ const MirrorOperations: React.FC = () => {
 
   const fetchLogs = useCallback(async (operationId: string) => {
     try {
-      const response = await axios.get(`/api/operations/${operationId}/logs`);
-      setLogs(response.data.logs || 'No logs available for this operation');
+      const data = await api.getOperationLogs(operationId);
+      setLogs(data.logs || 'No logs available for this operation');
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       console.error('Error fetching logs:', error);
-      setLogs(`Error loading logs: ${err.response?.data?.message || err.message}`);
+      setLogs(`Error loading logs: ${(error as ApiError).message}`);
     }
-  }, []);
+  }, [api]);
 
   const handleOperationCompleted = useCallback((op: Operation) => {
     if (!op?.id) return;
@@ -432,21 +406,21 @@ const MirrorOperations: React.FC = () => {
       notifiedOperationsRef.current.add(op.id);
 
       if (op.status === 'success') {
-        addSuccessAlert('Mirror Operation Completed!');
+        host.notify('success', 'Mirror Operation Completed!');
       } else if (op.status === 'failed') {
-        addDangerAlert('Mirror Operation Failed');
+        host.notify('danger', 'Mirror Operation Failed');
       } else if (op.status === 'stopped') {
-        addWarningAlert('Mirror Operation Stopped');
+        host.notify('warning', 'Mirror Operation Stopped');
       }
     }
-  }, [addSuccessAlert, addDangerAlert, addWarningAlert, fetchLogs]);
+  }, [host, fetchLogs]);
 
   const startLogStream = useCallback((operationId: string) => {
     if (logStream) {
       logStream.close();
     }
 
-    const eventSource = new EventSource(`/api/operations/${operationId}/logstream`);
+    const eventSource = new EventSource(api.operationLogStreamUrl(operationId));
     setLogStream(eventSource);
     logStreamOperationIdRef.current = operationId;
 
@@ -480,46 +454,46 @@ const MirrorOperations: React.FC = () => {
     };
 
     return eventSource;
-  }, [logStream, handleOperationCompleted, stopLogStream]);
+  }, [api, logStream, handleOperationCompleted, stopLogStream]);
 
   const fetchConfigurations = useCallback(async () => {
     try {
-      const response = await axios.get('/api/config/list');
-      setAvailableConfigs(response.data);
+      const data = await api.listConfigs();
+      setAvailableConfigs(data);
     } catch (error) {
       console.error('Error fetching configurations:', error);
     }
-  }, []);
+  }, [api]);
 
   const fetchFolders = useCallback(async () => {
     try {
-      const response = await axios.get<{ folders: string[] }>('/api/mirror-folders');
-      setAvailableFolders(response.data.folders ?? []);
+      const data = await api.listMirrorFolders();
+      setAvailableFolders(data.folders ?? []);
     } catch (error) {
       console.error('Error fetching mirror folders:', error);
       setAvailableFolders([]);
     }
-  }, []);
+  }, [api]);
 
   // Hosts with credentials in either the pull secret or the destination credentials, used only
   // to warn before start; oc-mirror still decides whether the push is allowed.
   const fetchCredentialHosts = useCallback(async () => {
     try {
-      const [pullSecretRes, credentialsRes] = await Promise.all([
-        axios.get('/api/registries'),
-        axios.get('/api/registry-credentials'),
+      const [pullSecretData, credentialsData] = await Promise.all([
+        api.listRegistries(),
+        api.listRegistryCredentials(),
       ]);
       const hosts = new Set<string>();
-      for (const r of pullSecretRes.data.registries || []) hosts.add(r.registry);
-      for (const c of credentialsRes.data.credentials || []) hosts.add(c.registry);
+      for (const r of pullSecretData.registries || []) hosts.add(r.registry);
+      for (const c of credentialsData.credentials || []) hosts.add(c.registry);
       setCredentialHosts(hosts);
-      setCredentialsError(credentialsRes.data.error || null);
+      setCredentialsError(credentialsData.error || null);
     } catch (error) {
       console.error('Error fetching registry credentials:', error);
       setCredentialHosts(null);
       setCredentialsError(null);
     }
-  }, []);
+  }, [api]);
 
   // Credentials are often edited in Settings in another tab, so refresh on return.
   useEffect(() => {
@@ -533,26 +507,25 @@ const MirrorOperations: React.FC = () => {
     const trimmed = name.trim();
     if (!trimmed) return;
     try {
-      await axios.post('/api/mirror-folders', { name: trimmed });
+      await api.createMirrorFolder(trimmed);
       await fetchFolders();
       setMirrorDestinationSubdir(trimmed);
-      addSuccessAlert(`Folder "${trimmed}" created`);
+      host.notify('success', `Folder "${trimmed}" created`);
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { error?: string } }; message?: string };
-      addDangerAlert(`Failed to create folder: ${err.response?.data?.error || err.message}`);
+      host.notify('danger', `Failed to create folder: ${(error as ApiError).message}`);
     }
     setFolderCreateMode(false);
     setNewFolderName('');
     setFolderSelectOpen(false);
-  }, [fetchFolders, addSuccessAlert, addDangerAlert]);
+  }, [api, fetchFolders, host]);
 
   const fetchOperations = useCallback(async () => {
     try {
-      const response = await axios.get('/api/operations');
+      const data = await api.listOperations();
       const previousOps = operationsRef.current;
-      setOperations(response.data);
+      setOperations(data);
 
-      response.data.forEach((op: Operation) => {
+      data.forEach((op: Operation) => {
         const prevOp = previousOps.find(p => p.id === op.id);
         const justCompleted = prevOp && prevOp.status === 'running' &&
           (op.status === 'success' || op.status === 'failed' || op.status === 'stopped');
@@ -562,14 +535,14 @@ const MirrorOperations: React.FC = () => {
         }
       });
 
-      const running = response.data.find((op: Operation) => op.status === 'running');
+      const running = data.find((op: Operation) => op.status === 'running');
       if (running) {
         lastRunningOperationIdRef.current = running.id;
       }
 
       if (!running && lastRunningOperationIdRef.current) {
         const lastOpId = lastRunningOperationIdRef.current;
-        const completedOp = response.data.find((op: Operation) => op.id === lastOpId);
+        const completedOp = data.find((op: Operation) => op.id === lastOpId);
         if (completedOp && (completedOp.status === 'success' || completedOp.status === 'failed' || completedOp.status === 'stopped')) {
           handleOperationCompleted(completedOp);
           if (logStreamOperationIdRef.current === completedOp.id) {
@@ -586,16 +559,16 @@ const MirrorOperations: React.FC = () => {
     } catch (error) {
       console.error('Error fetching operations:', error);
     }
-  }, [handleOperationCompleted, stopLogStream, fetchLogs]);
+  }, [api, handleOperationCompleted, stopLogStream, fetchLogs]);
 
   useEffect(() => {
     fetchOperations();
     fetchConfigurations();
     void fetchFolders();
-    axios.get('/api/system/info').then(res => setHostDataDir(res.data.hostDataDir || '')).catch(() => {});
+    api.getSystemInfo().then(info => setHostDataDir(info.hostDataDir || '')).catch(() => {});
     const interval = setInterval(fetchOperations, 5000);
     return () => clearInterval(interval);
-  }, [fetchOperations, fetchConfigurations, fetchFolders]);
+  }, [api, fetchOperations, fetchConfigurations, fetchFolders]);
 
   useEffect(() => {
     operationsRef.current = operations;
@@ -649,30 +622,30 @@ const MirrorOperations: React.FC = () => {
 
   const startOperation = async () => {
     if (!selectedConfig) {
-      addDangerAlert('Please select an ImageSetConfiguration file');
+      host.notify('danger', 'Please select an ImageSetConfiguration file');
       return;
     }
 
     const flagsValidationError = getOptionalFlagsValidationError(optionalFlags, mode);
     if (flagsValidationError) {
-      addDangerAlert(flagsValidationError);
+      host.notify('danger', flagsValidationError);
       return;
     }
 
     const optionalFlagsPayload = buildOptionalFlagsPayload(optionalFlags, mode);
     if (optionalFlagsPayload === null) {
-      addDangerAlert('Invalid optional flags');
+      host.notify('danger', 'Invalid optional flags');
       return;
     }
 
     if (destinationError) {
-      addDangerAlert(destinationError);
+      host.notify('danger', destinationError);
       return;
     }
 
     try {
       setLoading(true);
-      const response = await axios.post('/api/operations/start', {
+      const started = await api.startOperation({
         configFile: selectedConfig,
         mode,
         mirrorDestinationSubdir: mirrorDestinationSubdir.trim() || undefined,
@@ -682,17 +655,17 @@ const MirrorOperations: React.FC = () => {
           : {}),
       });
 
-      addSuccessAlert('Operation started successfully!');
+      host.notify('success', 'Operation started successfully!');
       setShowLogs(true);
       fetchOperations();
       void fetchFolders();
       setMirrorDestinationSubdir('');
 
-      if (response.data.status === 'running') {
+      if (started.status === 'running') {
         const logInterval = setInterval(async () => {
           try {
-            const logResponse = await axios.get(`/api/operations/${response.data.id}/logs`);
-            setLogs(logResponse.data.logs || '');
+            const logData = await api.getOperationLogs(started.id);
+            setLogs(logData.logs || '');
           } catch (error) {
             console.error('Error polling logs:', error);
           }
@@ -701,11 +674,8 @@ const MirrorOperations: React.FC = () => {
         setTimeout(() => clearInterval(logInterval), 300000);
       }
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string; error?: string } }; message?: string };
       console.error('Error starting operation:', error);
-      addDangerAlert(
-        `Failed to start operation: ${err.response?.data?.error || err.response?.data?.message || err.message}`,
-      );
+      host.notify('danger', `Failed to start operation: ${(error as ApiError).message}`);
     } finally {
       setLoading(false);
     }
@@ -719,8 +689,8 @@ const MirrorOperations: React.FC = () => {
 
   const confirmDeleteConfig = async () => {
     try {
-      await axios.delete(`/api/config/delete/${encodeURIComponent(deleteFilename)}`);
-      addSuccessAlert(`Configuration "${deleteFilename}" deleted successfully!`);
+      await api.deleteConfig(deleteFilename);
+      host.notify('success', `Configuration "${deleteFilename}" deleted successfully!`);
       fetchConfigurations();
 
       if (selectedConfig === deleteFilename) {
@@ -730,19 +700,18 @@ const MirrorOperations: React.FC = () => {
       setShowDeleteModal(false);
       setDeleteFilename('');
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       console.error('Error deleting configuration:', error);
-      addDangerAlert(`Failed to delete configuration: ${err.response?.data?.message || err.message}`);
+      host.notify('danger', `Failed to delete configuration: ${(error as ApiError).message}`);
     }
   };
 
   const stopOperation = async (operationId: string) => {
     try {
-      await axios.post(`/api/operations/${operationId}/stop`);
+      await api.stopOperation(operationId);
       fetchOperations();
     } catch (error) {
       console.error('Error stopping operation:', error);
-      addDangerAlert('Failed to stop operation');
+      host.notify('danger', 'Failed to stop operation');
     }
   };
 
@@ -767,14 +736,14 @@ const MirrorOperations: React.FC = () => {
   const confirmDeleteOperation = async () => {
     if (!deleteOperationId) return;
     try {
-      await axios.delete(`/api/operations/${deleteOperationId}`);
-      addSuccessAlert('Operation deleted successfully!');
+      await api.deleteOperation(deleteOperationId);
+      host.notify('success', 'Operation deleted successfully!');
       fetchOperations();
       setShowDeleteModal(false);
       setDeleteOperationId(null);
     } catch (error) {
       console.error('Error deleting operation:', error);
-      addDangerAlert('Failed to delete operation');
+      host.notify('danger', 'Failed to delete operation');
     }
   };
 
@@ -820,7 +789,7 @@ const MirrorOperations: React.FC = () => {
 
     try {
       await navigator.clipboard.writeText(fullPath);
-      addSuccessAlert('Full path copied to clipboard!');
+      host.notify('success', 'Full path copied to clipboard!');
     } catch {
       const textArea = document.createElement('textarea');
       textArea.value = fullPath;
@@ -830,9 +799,9 @@ const MirrorOperations: React.FC = () => {
       textArea.select();
       try {
         document.execCommand('copy');
-        addSuccessAlert('Full path copied to clipboard!');
+        host.notify('success', 'Full path copied to clipboard!');
       } catch {
-        addDangerAlert('Failed to copy path');
+        host.notify('danger', 'Failed to copy path');
       }
       document.body.removeChild(textArea);
     }
@@ -876,16 +845,16 @@ const MirrorOperations: React.FC = () => {
   const bulkDeleteOperations = async (ids: string[]) => {
     setBulkDeleting(true);
     try {
-      await Promise.all(ids.map(id => axios.delete(`/api/operations/${id}`)));
+      await Promise.all(ids.map(id => api.deleteOperation(id)));
       setCheckedOpIds(prev => {
         const next = new Set(prev);
         for (const id of ids) next.delete(id);
         return next;
       });
-      addSuccessAlert(`Deleted ${ids.length} operation${ids.length > 1 ? 's' : ''}`);
+      host.notify('success', `Deleted ${ids.length} operation${ids.length > 1 ? 's' : ''}`);
       await fetchOperations();
     } catch {
-      addDangerAlert('Failed to delete some operations');
+      host.notify('danger', 'Failed to delete some operations');
     } finally {
       setBulkDeleting(false);
       setBulkDeleteTarget(null);
@@ -1591,7 +1560,7 @@ const MirrorOperations: React.FC = () => {
                         variant="link"
                         isInline
                         component="a"
-                        href={`/api/config/download/${encodeURIComponent(op.configFile)}`}
+                        href={api.configDownloadUrl(op.configFile)}
                         download={op.configFile}
                       >
                         {op.configFile}
