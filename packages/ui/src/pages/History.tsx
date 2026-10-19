@@ -1,5 +1,4 @@
 import { Fragment, useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
 import {
   Card,
   CardBody,
@@ -46,38 +45,14 @@ import {
   TrashAltIcon,
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { useAlerts } from '../AlertContext';
-import { OPERATION_MODE_LABELS, isRegistryTargetMode, type OperationMode } from '../../server/operationModes';
-
-interface Operation {
-  id: string;
-  name: string;
-  configFile: string;
-  status: 'running' | 'success' | 'failed' | 'stopped';
-  startedAt: string;
-  completedAt?: string;
-  duration?: number;
-  errorMessage?: string;
-  mode?: OperationMode;
-  destinationRegistry?: string;
-}
-
-interface OperationDetails {
-  imagesMirrored?: number;
-  operatorsMirrored?: number;
-  totalSize?: number;
-  platformImages?: number;
-  additionalImages?: number;
-  helmCharts?: number;
-  configFile?: string;
-  status?: string;
-  mode?: OperationMode;
-  destinationRegistry?: string;
-  clusterResourcesPath?: string;
-}
+import { OPERATION_MODE_LABELS, isRegistryTargetMode } from '@mirror-gui/shared/operationModes';
+import { useApi } from '../api';
+import { useHost } from '../host';
+import type { Operation, OperationDetails } from '../api/types';
 
 const History: React.FC = () => {
-  const { addSuccessAlert, addDangerAlert } = useAlerts();
+  const api = useApi();
+  const host = useHost();
 
   const [operations, setOperations] = useState<Operation[]>([]);
   const [selectedOperation, setSelectedOperation] = useState<Operation | null>(null);
@@ -97,15 +72,15 @@ const History: React.FC = () => {
   const fetchHistory = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await axios.get('/api/operations/history');
-      setOperations(Array.isArray(response.data) ? response.data : []);
+      const data = await api.getOperationHistory();
+      setOperations(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching history:', error);
-      addDangerAlert('Failed to load operation history');
+      host.notify('danger', 'Failed to load operation history');
     } finally {
       setLoading(false);
     }
-  }, [addDangerAlert]);
+  }, [api, host]);
 
   useEffect(() => {
     fetchHistory();
@@ -119,8 +94,8 @@ const History: React.FC = () => {
       setLogSource(null);
     }
 
-    axios.get(`/api/operations/${selectedOperation.id}/logs`).then(res => {
-      setLiveLog(res.data.logs || '');
+    api.getOperationLogs(selectedOperation.id).then(data => {
+      setLiveLog(data.logs || '');
     }).catch(err => {
       console.error('Error fetching logs:', err);
       setLiveLog('No logs available for this operation.');
@@ -128,7 +103,7 @@ const History: React.FC = () => {
 
     if (selectedOperation.status === 'running') {
       try {
-        const es = new EventSource(`/api/operations/${selectedOperation.id}/logstream`);
+        const es = new EventSource(api.operationLogStreamUrl(selectedOperation.id));
         es.onmessage = (e) => {
           setLiveLog((prev) => `${prev}${e.data ? `${e.data}\n` : ''}`);
         };
@@ -196,8 +171,8 @@ const History: React.FC = () => {
 
   const fetchOperationDetails = async (operationId: string) => {
     try {
-      const response = await axios.get(`/api/operations/${operationId}/details`);
-      setOperationDetails(response.data);
+      const data = await api.getOperationDetails(operationId);
+      setOperationDetails(data);
     } catch (error) {
       console.error('Error fetching operation details:', error);
       const operation = operations.find(op => op.id === operationId);
@@ -264,7 +239,7 @@ const History: React.FC = () => {
   const deleteOperations = async (ids: string[]) => {
     setDeleting(true);
     try {
-      await Promise.all(ids.map(id => axios.delete(`/api/operations/${id}`)));
+      await Promise.all(ids.map(id => api.deleteOperation(id)));
       if (selectedOperation && ids.includes(selectedOperation.id)) {
         clearSelectedOperation();
       }
@@ -273,10 +248,10 @@ const History: React.FC = () => {
         for (const id of ids) next.delete(id);
         return next;
       });
-      addSuccessAlert(`Deleted ${ids.length} operation${ids.length > 1 ? 's' : ''}`);
+      host.notify('success', `Deleted ${ids.length} operation${ids.length > 1 ? 's' : ''}`);
       await fetchHistory();
     } catch {
-      addDangerAlert('Failed to delete some operations');
+      host.notify('danger', 'Failed to delete some operations');
     } finally {
       setDeleting(false);
       setDeleteModalTarget(null);
@@ -383,7 +358,7 @@ const History: React.FC = () => {
                   variant="link"
                   isInline
                   component="a"
-                  href={`/api/config/download/${encodeURIComponent(configName)}`}
+                  href={api.configDownloadUrl(configName)}
                   download={configName}
                 >
                   {configName}
@@ -679,7 +654,7 @@ const History: React.FC = () => {
                             variant="link"
                             isInline
                             component="a"
-                            href={`/api/config/download/${encodeURIComponent(op.configFile)}`}
+                            href={api.configDownloadUrl(op.configFile)}
                             download={op.configFile}
                             onClick={(e) => e.stopPropagation()}
                           >
