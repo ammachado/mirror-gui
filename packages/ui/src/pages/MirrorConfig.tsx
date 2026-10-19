@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import axios from 'axios';
 import YAML from 'yaml';
-import { useAlerts } from '../AlertContext';
-import YamlHighlighter from './YamlHighlighter';
+import YamlHighlighter from '../components/YamlHighlighter';
+import { useApi } from '../api';
+import { useHost } from '../host';
+import type { CatalogInfo, DetailedOperator, OperatorDependency } from '../api/types';
 import {
   Alert,
   AlertVariant,
@@ -104,20 +105,6 @@ interface ImageSetConfig {
     additionalImages: { name: string }[];
     helm: { repositories: never[] };
   };
-}
-
-interface CatalogInfo {
-  name: string;
-  url: string;
-  description: string;
-  digest?: string | null;
-  syncedAt?: string | null;
-}
-
-interface DetailedOperator {
-  name: string;
-  defaultChannel: string;
-  allChannels: string[];
 }
 
 interface CleanChannel {
@@ -428,7 +415,8 @@ const generateDefaultConfigName = (): string => {
 };
 
 const MirrorConfig: React.FC = () => {
-  const { addSuccessAlert, addDangerAlert, addInfoAlert } = useAlerts();
+  const api = useApi();
+  const host = useHost();
 
   const [config, setConfig] = useState<ImageSetConfig>({
     kind: 'ImageSetConfiguration',
@@ -534,15 +522,15 @@ const MirrorConfig: React.FC = () => {
   const fetchAvailableData = useCallback(async () => {
     try {
       setLoading(true);
-      const catalogsRes = await axios.get('/api/catalogs');
-      setAvailableCatalogs(catalogsRes.data);
+      const catalogs = await api.listCatalogs();
+      setAvailableCatalogs(catalogs);
     } catch (error) {
       console.error('Error fetching available data:', error);
-      addDangerAlert('Failed to load available channels and operators');
+      host.notify('danger', 'Failed to load available channels and operators');
     } finally {
       setLoading(false);
     }
-  }, [addDangerAlert]);
+  }, [api, host]);
 
   useEffect(() => {
     fetchAvailableData();
@@ -550,10 +538,7 @@ const MirrorConfig: React.FC = () => {
 
   const fetchOperatorsForCatalog = async (catalogUrl: string): Promise<string[]> => {
     try {
-      const response = await axios.get(
-        `/api/operators?catalog=${encodeURIComponent(catalogUrl)}&detailed=true`,
-      );
-      const detailedOps: DetailedOperator[] = response.data;
+      const detailedOps: DetailedOperator[] = await api.listDetailedOperators(catalogUrl);
       setDetailedOperators(prev => ({ ...prev, [catalogUrl]: detailedOps }));
       return detailedOps.map(op => op.name);
     } catch (error) {
@@ -570,17 +555,15 @@ const MirrorConfig: React.FC = () => {
     if (operatorChannels[key]) return operatorChannels[key];
 
     try {
-      const response = await axios.get(
-        `/api/operator-channels/${operatorName}?catalogUrl=${encodeURIComponent(catalogUrl)}`,
-      );
-      const channelDetails = Array.isArray(response.data?.channels)
-        ? response.data.channels
-        : Array.isArray(response.data)
-          ? response.data
+      const data = await api.getOperatorChannels(operatorName, catalogUrl);
+      const channelDetails = Array.isArray(data?.channels)
+        ? data.channels
+        : Array.isArray(data)
+          ? data
           : [];
 
-      const allChannels = Array.isArray(response.data?.allChannels)
-        ? response.data.allChannels
+      const allChannels = Array.isArray(data?.allChannels)
+        ? data.allChannels
         : channelDetails
             .map((channel: { name?: string }) => channel?.name)
             .filter((channel: string | undefined): channel is string => Boolean(channel));
@@ -601,7 +584,7 @@ const MirrorConfig: React.FC = () => {
       return allChannels;
     } catch (error) {
       console.error(`Error fetching channels for ${operatorName}:`, error);
-      addDangerAlert(`Failed to load channels for ${operatorName}`);
+      host.notify('danger', `Failed to load channels for ${operatorName}`);
       return ['stable'];
     }
   };
@@ -612,10 +595,8 @@ const MirrorConfig: React.FC = () => {
     catalogUrl: string,
   ): Promise<string[]> => {
     try {
-      const response = await axios.get(`/api/operators/${operatorName}/versions`, {
-        params: { catalog: catalogUrl, channel: channelName },
-      });
-      if (response.data?.versions?.length > 0) return response.data.versions;
+      const data = await api.getOperatorVersions(operatorName, catalogUrl, channelName);
+      if (data?.versions && data.versions.length > 0) return data.versions;
     } catch (error) {
       console.error(`Error fetching versions for ${operatorName}/${channelName}:`, error);
     }
@@ -728,7 +709,7 @@ const MirrorConfig: React.FC = () => {
       }));
 
       if (clearedMin || clearedMax) {
-        addInfoAlert('Platform Channel: Cleared versions that do not match the selected channel');
+        host.notify('info', 'Platform Channel: Cleared versions that do not match the selected channel');
       }
       return;
     }
@@ -868,15 +849,10 @@ const MirrorConfig: React.FC = () => {
 
       try {
         const catalogVersion = operator.catalog.split(':').pop() || 'v4.19';
-        const depRes = await axios.get(`/api/operators/${value}/dependencies`, {
-          params: { catalogUrl: operator.catalog },
-        });
+        const depData = await api.getOperatorDependencies(value, operator.catalog);
 
-        if (depRes.data?.dependencies?.length > 0) {
-          const deps = depRes.data.dependencies as {
-            packageName: string;
-            defaultChannel?: string;
-          }[];
+        if (depData?.dependencies && depData.dependencies.length > 0) {
+          const deps: OperatorDependency[] = depData.dependencies;
           const vMatch = catalogVersion.match(/v?(\d+\.\d+)/);
           const defaultCh = vMatch ? `stable-${vMatch[1]}` : 'stable';
 
@@ -901,7 +877,7 @@ const MirrorConfig: React.FC = () => {
                 }
               }, 0);
 
-              addSuccessAlert(`Auto-added ${newDeps.length} dependency package(s) for ${value}`);
+              host.notify('success', `Auto-added ${newDeps.length} dependency package(s) for ${value}`);
 
               return {
                 ...prev,
@@ -1255,13 +1231,13 @@ const MirrorConfig: React.FC = () => {
         ? `${customConfigName.trim()}.yaml`
         : generateDefaultConfigName();
 
-      await axios.post('/api/config/save', { config: yamlString, name: configName });
-      addSuccessAlert('Configuration saved successfully!');
+      await api.saveConfig(configName, yamlString);
+      host.notify('success', 'Configuration saved successfully!');
       setCustomConfigName('');
       setIsEditingName(false);
     } catch (error) {
       console.error('Error saving configuration:', error);
-      addDangerAlert('Failed to save configuration');
+      host.notify('danger', 'Failed to save configuration');
     } finally {
       setLoading(false);
     }
@@ -1429,7 +1405,7 @@ const MirrorConfig: React.FC = () => {
     }, 0);
 
     setActiveTab('preview');
-    addSuccessAlert('Configuration loaded. Review or edit YAML on the Preview tab.');
+    host.notify('success', 'Configuration loaded. Review or edit YAML on the Preview tab.');
   };
 
   const yamlPreview = YAML.stringify(generateCleanConfig(), { indent: 2 });
@@ -1513,7 +1489,7 @@ const MirrorConfig: React.FC = () => {
 
       setIsEditingPreview(false);
       setEditedYaml('');
-      addSuccessAlert('YAML changes applied to form editor');
+      host.notify('success', 'YAML changes applied to form editor');
     } catch (err: any) {
       setFieldError('yaml-preview', `Invalid YAML: ${err.message}`);
     }
@@ -2037,7 +2013,7 @@ const MirrorConfig: React.FC = () => {
                         icon={<CopyIcon />}
                         onClick={() => {
                           navigator.clipboard.writeText(isEditingPreview ? editedYaml : yamlPreview);
-                          addSuccessAlert('YAML configuration copied to clipboard!');
+                          host.notify('success', 'YAML configuration copied to clipboard!');
                         }}
                       >
                         Copy YAML
