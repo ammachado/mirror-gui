@@ -1,0 +1,11 @@
+{
+  "name": "@mirror-gui/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Code shared by the mirror-gui server and UI; must not import Node or browser modules",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./operationModes": "./src/operationModes.ts"
+  }
+}

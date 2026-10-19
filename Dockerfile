@@ -132,6 +132,7 @@ ARG VERSION=1.0
 WORKDIR /app
 
 COPY package*.json ./
+COPY packages/shared/package.json ./packages/shared/package.json
 RUN npm config set fetch-timeout 300000 && \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 20000 && \
@@ -247,6 +248,7 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY package*.json ./
+COPY packages/shared/package.json ./packages/shared/package.json
 RUN npm config set fetch-timeout 300000 && \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 20000 && \
@@ -261,6 +263,7 @@ RUN npm config set fetch-timeout 300000 && \
 
 COPY --from=builder /app/dist ./dist
 COPY server ./server
+COPY packages/shared ./packages/shared
 COPY scripts/catalog_metadata.py ./scripts/catalog_metadata.py
 COPY sync-catalogs.sh ./sync-catalogs.sh
 RUN chmod +x ./sync-catalogs.sh

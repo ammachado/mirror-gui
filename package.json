@@ -16,6 +16,7 @@
     "disconnected"
   ],
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "start": "npm run dev",
@@ -36,6 +37,7 @@
     "test:all": "vitest run && playwright test"
   },
   "dependencies": {
+    "@mirror-gui/shared": "1.0.0",
     "@patternfly/patternfly": "^6",
     "@patternfly/react-component-groups": "^6.4.0",
     "@patternfly/react-core": "^6",
