@@ -32,9 +32,12 @@ Decisions already made for later sub-projects:
 
 ## Scope of this sub-project
 
+Prerequisite: this branch contains the mirror-to-mirror work before implementation starts, either because `feature/mirrorToMirror` is merged into `main` and this branch is rebased onto `main`, or because this branch is stacked on `feature/mirrorToMirror` until that merge happens. That branch rewrites `History.tsx`, `MirrorOperations.tsx`, and `Settings.tsx` heavily, so moving those pages first would force a painful rebase of the larger change.
+
 In scope:
 
-- npm workspaces with one new package, `packages/ui` (`@mirror-gui/ui`).
+- npm workspaces with two new packages: `packages/ui` (`@mirror-gui/ui`) and `packages/shared` (`@mirror-gui/shared`).
+- Moving `server/operationModes.ts` (operation mode types, labels, and registry-host validators, written to run in both Node and the browser) into `packages/shared`. `server/operationModes.ts` becomes a one-line re-export, so its server importers and `tests/unit/operationModes.test.ts` stay unchanged.
 - A host adapter interface and its standalone implementation.
 - A typed API client built on the adapter.
 - Moving the five pages and `YamlHighlighter` into `packages/ui`, rewired to the adapter and client.
@@ -43,10 +46,10 @@ In scope:
 
 Out of scope:
 
-- Any change under `server/`.
+- Any change under `server/` other than the `operationModes.ts` re-export.
 - Any change to existing tests.
 - The console plugin package, its build, or its adapter implementation.
-- Sharing TypeScript types between server and UI.
+- Sharing TypeScript types between server and UI beyond `@mirror-gui/shared`.
 - Changes to data-fetching patterns (caching, polling, TanStack Query).
 - Splitting the large page components.
 
@@ -58,7 +61,7 @@ The repo root remains the standalone app. Moving the server now would rewrite im
 /                         workspace root AND standalone app
   package.json            adds "workspaces": ["packages/*"]
   index.html, vite.config.ts, Dockerfile, ...   unchanged locations
-  server/                 unchanged
+  server/                 unchanged except operationModes.ts (re-export of @mirror-gui/shared)
   tests/                  unchanged files; new unit tests added
   src/                    standalone shell
     main.tsx              global PatternFly CSS imports, renders App
@@ -66,6 +69,9 @@ The repo root remains the standalone app. Moving the server now would rewrite im
     ThemeContext.tsx, AlertContext.tsx, app.css
     components/ThemeToggle.tsx
     host/standaloneHost.ts   NEW: standalone MirrorGuiHost implementation
+  packages/shared/        NEW: @mirror-gui/shared
+    package.json
+    src/operationModes.ts MOVED from server/; no Node or browser imports
   packages/ui/            NEW: @mirror-gui/ui
     package.json
     tsconfig.json
@@ -79,12 +85,13 @@ The repo root remains the standalone app. Moving the server now would rewrite im
 
 Rules:
 
-- `packages/ui` is consumed as TypeScript source through the workspace symlink. It has no build step and no `dist/`. Vite (standalone) and, later, webpack (plugin) compile it.
+- `packages/ui` and `packages/shared` are consumed as TypeScript source through the workspace symlinks. They have no build step and no `dist/`. Vite (standalone), tsx (server), and, later, webpack (plugin) compile them.
 - `react`, `react-dom`, `react-router-dom`, and `@patternfly/*` are `peerDependencies` of `packages/ui`. Both hosts provide a single copy; the console shares them as Module Federation singletons.
-- `packages/ui` must not import `axios`, anything under `src/`, or anything under `server/`. An ESLint `no-restricted-imports` rule scoped to `packages/ui/**` enforces this.
+- `packages/ui` must not import `axios`, anything under `src/`, or anything under `server/`. It may import `@mirror-gui/shared`. An ESLint `no-restricted-imports` rule scoped to `packages/ui/**` enforces this.
+- Each page is also exported from its own subpath (`@mirror-gui/ui/pages/<Page>`), and the standalone shell lazy-loads pages from those subpaths. Lazy-loading from the package barrel would put all five pages in one chunk, losing today's per-page code splitting.
 - Global CSS (PatternFly base, addons, `app.css`) stays in the standalone shell, because the console supplies its own.
 
-Changes outside `src/` and `packages/`: root `package.json` (`workspaces`), root `tsconfig.json` include list, ESLint config globs (`packages/**`), lint script globs, and the Dockerfile builder stage (copy `packages/` before `npm ci` so the workspace resolves).
+Changes outside `src/` and `packages/`: root `package.json` (`workspaces`), root `tsconfig.json` include list, ESLint config globs (`packages/**`), lint script globs, `server/operationModes.ts` (re-export), and the Dockerfile (copy the workspace manifests before both `npm ci` runs so the workspaces resolve, and copy `packages/shared` into the runtime stage because the server imports it).
 
 ## Section 2: The host adapter
 
@@ -107,12 +114,11 @@ type PageId = 'dashboard' | 'config' | 'operations' | 'history' | 'settings';
 interface RequestOptions {
   body?: unknown;
   params?: Record<string, string>;
-  formData?: FormData;
 }
 
 interface MirrorGuiHost {
   /** Request to the mirror-gui backend. `path` is relative to the API root, e.g. '/operations/start'. */
-  request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, options?: RequestOptions): Promise<T>;
+  request<T>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, options?: RequestOptions): Promise<T>;
   /** Absolute URL for resources the browser loads itself (EventSource, download links). */
   apiUrl(path: string): string;
   notify(variant: 'success' | 'danger' | 'warning' | 'info', title: string): void;
@@ -127,7 +133,9 @@ class ApiError extends Error {
 ```
 
 - `HostProvider` supplies the host through React context; `useHost()` reads it and throws if no provider is present.
-- `request` always rejects with `ApiError`. `message` is the server's `error` field when present, otherwise a generic message. Pages replace their reads of axios's `error.response?.data?.error` with `ApiError.message` and `ApiError.status`.
+- `request` always rejects with `ApiError`. `message` is the server's `error` field when it is a non-empty string, otherwise the `message` field under the same condition, otherwise the transport's message (for example `Request failed with status code 502` or `Network Error`). It is never empty. Pages replace their reads of axios's `error.response?.data?.error` with `ApiError.message` and `ApiError.status`.
+- Behavior change: three Settings handlers today fall back to a fixed text (for example `Failed to start catalog sync`) when the response has no `error` field. Because `ApiError.message` is never empty, they show the transport message instead. This only happens when the server or a proxy answers without a JSON `error` field.
+- File uploads (`FormData`) are not part of the interface: no page uploads files today. The plugin sub-project adds them if it needs them.
 - Pages do not call `host.request` directly; they use the API client.
 
 Standalone implementation (`src/host/standaloneHost.ts`):
@@ -151,7 +159,8 @@ packages/ui/src/api/
   config.ts       list, save, remove, downloadUrl
   catalogs.ts     catalogs, operators, operatorChannels, dependencies, sync, syncStatus, deleteSyncData
   system.ts       stats, systemStatus, systemInfo, mirrorFolders, addMirrorFolder, cacheCleanup
-  settings.ts     pullSecretStatus, pullSecretContent, savePullSecret, removePullSecret, registries, verifyRegistry
+  settings.ts     pullSecretStatus, pullSecretContent, savePullSecret, removePullSecret, registries, verifyRegistry,
+                  registry credentials (list, save, remove, verify)
   types.ts        request and response types
   index.ts        useApi(): all functions bound to useHost()
 ```
@@ -179,13 +188,14 @@ The adapter test imports axios-related code from `src/host/`; if mocking axios i
 
 ### Existing tests
 
-No existing unit, integration, or E2E file is modified, skipped, or excluded. The 12 Playwright specs are the primary evidence that the standalone app behaves the same. E2E runs locally with `CI=1`, so Playwright starts its own server against a temporary storage directory.
+No existing unit, integration, or E2E file is modified, skipped, or excluded. The Playwright specs under `tests/e2e/` (all of them, including those added by the mirror-to-mirror work) are the primary evidence that the standalone app behaves the same. E2E runs locally with `CI=1`, so Playwright starts its own server against a temporary storage directory.
 
 ### Migration order
 
 Each step leaves the app building and the test suites passing.
 
-1. Workspace scaffolding: `packages/ui` (`package.json`, `tsconfig.json`), root `workspaces`, tsconfig includes, ESLint and lint-script globs, Dockerfile `COPY packages/`.
+0. Prerequisite: this branch contains the mirror-to-mirror work (rebased onto `main` after the merge, or stacked on `feature/mirrorToMirror` before it). Record the starting commit as the baseline for the success criteria.
+1. Workspace scaffolding: root `workspaces`; `packages/shared` with `operationModes.ts` moved from `server/` and the re-export left behind; then `packages/ui` (`package.json`, `tsconfig.json`), tsconfig includes, ESLint and lint-script globs, Dockerfile manifest copies and runtime `packages/shared` copy.
 2. Host interface, `ApiError`, `HostProvider`, `useHost`, standalone adapter, and adapter tests. Wire the provider into `App.tsx`.
 3. API client and client tests.
 4. Move pages one at a time: Dashboard, History, Settings, MirrorOperations, MirrorConfig. For each page, move the file, replace axios calls with `useApi`, replace `useAlerts` with `host.notify`, replace hardcoded routes with `host.pagePath`, then run lint, unit tests, and the related E2E specs.
@@ -198,7 +208,8 @@ All must hold:
 
 - `npm run lint`, `npm run build`, `npm test`, and `CI=1 npm run test:e2e` pass with no existing test modified, skipped, or excluded.
 - `packages/ui` contains no `axios` import and no `'/api` or `` `/api `` string literal, and the ESLint rule fails the build if one is added.
-- `git diff --stat main -- server/` is empty.
+- `git diff --stat <baseline> -- server/` lists only `server/operationModes.ts`, where `<baseline>` is the commit recorded in step 0. (The baseline, not `main`, because this branch may carry commits that are not on `main` yet, such as dependency upgrades.)
+- The production build still emits one JavaScript chunk per page.
 - The container image builds and the step 6 smoke test passes.
 
 ## Risks for later sub-projects

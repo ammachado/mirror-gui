@@ -4,20 +4,22 @@
 
 **Goal:** Move the five mirror-gui pages into a shared `@mirror-gui/ui` workspace package that reaches the backend, notifications, and routes only through a host adapter, with no visible change to the standalone app.
 
-**Architecture:** The repo root stays the standalone app (Express server, Vite shell, tests, Dockerfile). A new npm workspace `packages/ui` holds the pages, a `MirrorGuiHost` interface with a React context, and a typed API client made of plain functions that take the host as their first argument. The standalone shell supplies an axios-backed host; a later console plugin will supply a `consoleFetch`-backed one.
+**Architecture:** The repo root stays the standalone app (Express server, Vite shell, tests, Dockerfile). A new npm workspace `packages/ui` holds the pages, a `MirrorGuiHost` interface with a React context, and a typed API client made of plain functions that take the host as their first argument. A second workspace, `packages/shared`, holds `operationModes.ts`, which the server and the pages both use. The standalone shell supplies an axios-backed host; a later console plugin will supply a `consoleFetch`-backed one.
 
-**Tech Stack:** TypeScript 5.8, React 18, PatternFly 6, react-router-dom 6, axios (standalone shell only), Vite 8, Vitest 4, Playwright, ESLint 9 flat config, npm workspaces.
+**Tech Stack:** TypeScript 5.8, React 18, PatternFly 6, react-router-dom 6, axios (standalone shell only), Vite 8, Vitest 5, Playwright, ESLint 9 flat config, npm workspaces.
 
 **Spec:** `docs/superpowers/specs/2026-10-08-portable-ui-design.md`
 
 ## Global Constraints
 
-- No file under `server/` changes. `git diff --stat main -- server/` must be empty at the end.
+- All "before" comparisons use the local tag `portable-ui-base`, created in the Prerequisites section, not `main`. This branch can carry commits that are not on `main` (for example dependency upgrades), and a local `main` branch may not exist.
+- The only file under `server/` that changes is `server/operationModes.ts`, which becomes a re-export of `@mirror-gui/shared` (Task 0). `git diff --stat portable-ui-base -- server/` must list only that file at the end.
 - No existing test file under `tests/` is modified, skipped, or excluded. New test files may be added under `tests/unit/`.
-- No new external npm dependencies. The only `package-lock.json` change allowed is the workspace link for `@mirror-gui/ui`.
-- `packages/ui` must not import `axios`, must not import anything outside its own directory, and must contain no string literal or template starting with `/api`.
+- No new external npm dependencies. The only `package-lock.json` changes allowed relative to `portable-ui-base` are the workspace links for `@mirror-gui/shared` and `@mirror-gui/ui`.
+- `packages/ui` must not import `axios`, must not import anything outside its own directory except `@mirror-gui/shared`, and must contain no string literal or template starting with `/api`.
 - `react`, `react-dom`, `react-router-dom`, `@patternfly/react-core`, `@patternfly/react-icons`, `@patternfly/react-table` are `peerDependencies` of `packages/ui`.
-- `packages/ui` is consumed as TypeScript source (`"exports"` map to `.ts` files: `.` for everything, `./host` and `./api` for the page-free subsets). No build step, no `dist/`.
+- `packages/ui` is consumed as TypeScript source (`"exports"` map to `.ts`/`.tsx` files: `.` for everything, `./host` and `./api` for the page-free subsets, `./pages/*` for one page each). No build step, no `dist/`.
+- The standalone shell lazy-loads each page from `@mirror-gui/ui/pages/<Page>`, never from the barrel, so Vite keeps one chunk per page as it does today.
 - The standalone shell's host code and all unit tests import from `@mirror-gui/ui/host` and `@mirror-gui/ui/api`, never from the `@mirror-gui/ui` barrel: the barrel re-exports the pages, which would pull PatternFly and page code into node-environment unit tests.
 - Global CSS imports (`@patternfly/react-core/dist/styles/base.css`, `patternfly-addons.css`, `app.css`) stay in `src/main.tsx`.
 - No endpoint, request shape, or response shape changes; `API.md` is not edited.
@@ -39,11 +41,14 @@
 ## File Structure
 
 ```
-package.json                              MODIFY: workspaces, lint globs, @mirror-gui/ui dependency
+package.json                              MODIFY: workspaces (Task 0), lint globs, @mirror-gui/* dependencies
 tsconfig.json                             MODIFY: include packages/ui/src
 eslint.config.js                          MODIFY: lint packages/ui; boundary rule (Task 8)
 vitest.config.ts                          MODIFY: coverage include
-Dockerfile                                MODIFY: copy packages/ui/package.json before both npm ci runs
+Dockerfile                                MODIFY: copy workspace manifests before both npm ci runs; copy packages/shared into the runtime stage
+packages/shared/package.json              CREATE (Task 0)
+packages/shared/src/operationModes.ts     MOVED from server/operationModes.ts (Task 0)
+server/operationModes.ts                  REPLACED by a one-line re-export (Task 0)
 src/App.tsx                               MODIFY: wrap with StandaloneHostProvider; import pages from @mirror-gui/ui
 src/host/standaloneHost.ts                CREATE: createStandaloneHost, toApiError
 src/host/StandaloneHostProvider.tsx       CREATE: memoized host from AlertContext
@@ -81,6 +86,111 @@ CI=1 npx playwright test tests/e2e/<spec>.spec.ts
 
 With `CI=1` the server runs from `npx tsx server/index.ts` (Vite dev middleware, so no build needed) on port 3001 with a temporary `STORAGE_DIR`. First time only: `npx playwright install chromium` (browser binaries, not an npm dependency).
 
+## Prerequisites
+
+Do not start Task 0 until all of these hold. If one does not, stop and report.
+
+1. This branch contains the mirror-to-mirror work. Check: `test -f server/operationModes.ts && echo ok` prints `ok`.
+2. This branch is rebased onto the newest upstream for that work: `git fetch origin`, then `git rebase origin/main` if `git ls-tree --name-only origin/main server/ | grep operationModes.ts` prints `server/operationModes.ts` (mirror-to-mirror is merged), otherwise `git rebase feature/mirrorToMirror` (stacked until the merge). Resolve nothing by guessing; if the rebase conflicts outside `docs/superpowers/`, stop and report. Commits already contained in the new base (for example dependency upgrades) are skipped, not merged by hand.
+3. The baseline is tagged: `git tag -f portable-ui-base HEAD`. Every "before" comparison in this plan uses this tag.
+4. Baseline suites pass: `npm ci && npm run lint && npm run build && npm test && npm run server:build`. Record the `server:build` result; Task 0 must not change it.
+
+**Line numbers.** The call-site tables in Tasks 3 to 7 were taken before the mirror-to-mirror merge. Dashboard and MirrorConfig did not change in that merge, so their line numbers still hold. For History, Settings, and MirrorOperations, locate each row by its **Before** text, not its line number. The rows marked *(m2m)* cover call sites the merge added.
+
+---
+
+### Task 0: Shared operation modes package
+
+**Files:**
+- Create: `packages/shared/package.json`
+- Move: `server/operationModes.ts` to `packages/shared/src/operationModes.ts`
+- Create: `server/operationModes.ts` (re-export)
+- Modify: `package.json`, `package-lock.json`, `Dockerfile`
+- Test: existing `tests/unit/operationModes.test.ts` and the server importers (`server/index.ts`, `server/ocMirrorArgs.ts`, `server/registryCredentials.ts`), all unchanged
+
+**Interfaces:**
+- Produces: `@mirror-gui/shared/operationModes`, exporting everything `server/operationModes.ts` exported before (`OperationMode`, `OPERATION_MODES`, `OPERATION_MODE_LABELS`, `isOperationMode`, `isRegistryTargetMode`, `isValidRegistryHost`, `getRegistryHost`, and the rest).
+
+- [ ] **Step 1: Create the package and move the module**
+
+`packages/shared/package.json`:
+
+```json
+{
+  "name": "@mirror-gui/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Code shared by the mirror-gui server and UI; must not import Node or browser modules",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./operationModes": "./src/operationModes.ts"
+  }
+}
+```
+
+```bash
+mkdir -p packages/shared/src
+git mv server/operationModes.ts packages/shared/src/operationModes.ts
+```
+
+New `server/operationModes.ts` (keeps every existing `./operationModes.js` and `../../server/operationModes` import working, including `tests/unit/operationModes.test.ts`):
+
+```ts
+// Moved to @mirror-gui/shared so the UI package can use it without importing from server/.
+export * from '@mirror-gui/shared/operationModes';
+```
+
+- [ ] **Step 2: Register the workspace**
+
+In `package.json`:
+- Add after `"type": "module",`: `"workspaces": ["packages/*"],`
+- Add to `dependencies` (alphabetical position, first entry): `"@mirror-gui/shared": "1.0.0",`
+
+Run: `npm install`
+Expected: `git diff package-lock.json` shows only the `packages/shared` and `node_modules/@mirror-gui/shared` entries. `ls -l node_modules/@mirror-gui/shared` is a symlink to `../../packages/shared`. If any other package version changes, stop and report.
+
+- [ ] **Step 3: Make the container include the package**
+
+In `Dockerfile`, both the builder and the production stage have a `COPY package*.json ./` line followed by `npm ci`. Directly after **each** of those two lines add:
+
+```dockerfile
+COPY packages/shared/package.json ./packages/shared/package.json
+```
+
+In the production stage, directly after `COPY server ./server`, add:
+
+```dockerfile
+COPY packages/shared ./packages/shared
+```
+
+(The production server runs `npx tsx server/index.ts`, and the re-export resolves `@mirror-gui/shared` through the workspace symlink `npm ci` creates, so the source must be in the image.) If the production stage applies ownership or permission changes to `server/`, apply the same ones to `packages/shared`.
+
+- [ ] **Step 4: Verify**
+
+Run: `npm run lint && npm run build && npm test && npm run server:build`
+Expected: all pass, and `server:build` gives the same result recorded in Prerequisite 4. If `server:build` newly fails with `TS6059` (file not under `rootDir`), stop and report: fixing it needs a change to `server/tsconfig.json`, which this plan does not authorize.
+
+Run: `npx tsx -e "import('./server/operationModes.ts').then(m => console.log(Object.keys(m).sort().join(',')))"`
+Expected: the same export names as `git show portable-ui-base:server/operationModes.ts | grep -oE '^export (const|function|type) [A-Za-z_]+' | awk '{print $3}' | sort` (type-only exports do not appear at runtime; compare the value exports).
+
+Run: `CI=1 npx playwright test tests/e2e/operationModes.spec.ts tests/e2e/mirrorToMirror.spec.ts`
+Expected: PASS.
+
+Run: `podman build -t localhost/mirror-gui .`
+Expected: build succeeds. Then `podman run --rm --entrypoint npx localhost/mirror-gui tsx -e "import('./server/operationModes.ts').then(() => console.log('ok'))"` prints `ok`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/shared server/operationModes.ts package.json package-lock.json Dockerfile
+git commit -m "refactor: move operation modes to @mirror-gui/shared
+
+The UI package needs the mode labels and registry-host validators but
+must not import from server/. server/operationModes.ts re-exports the
+moved module, so server code and tests are unchanged."
+```
+
 ---
 
 ### Task 1: Workspace, host adapter, and standalone host
@@ -94,10 +204,10 @@ With `CI=1` the server runs from `npx tsx server/index.ts` (Vite dev middleware,
 **Interfaces:**
 - Consumes: `AlertProvider`, `useAlerts` from `src/AlertContext.tsx` (`addAlert(title: string, variant: AlertVariant)`).
 - Produces (exported from `@mirror-gui/ui/host` and re-exported from `@mirror-gui/ui`):
-  - `type HttpMethod = 'GET' | 'POST' | 'DELETE'`
+  - `type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'`
   - `type NotifyVariant = 'success' | 'danger' | 'warning' | 'info'`
   - `type PageId = 'dashboard' | 'config' | 'operations' | 'history' | 'settings'`
-  - `interface RequestOptions { body?: unknown; params?: Record<string, string>; formData?: FormData }`
+  - `interface RequestOptions { body?: unknown; params?: Record<string, string> }`
   - `interface MirrorGuiHost { request<T>(method: HttpMethod, path: string, options?: RequestOptions): Promise<T>; apiUrl(path: string): string; notify(variant: NotifyVariant, title: string): void; pagePath(page: PageId): string }`
   - `class ApiError extends Error { readonly status: number; readonly body: unknown }`
   - `HostProvider({ host, children })`, `useHost(): MirrorGuiHost`
@@ -118,7 +228,11 @@ With `CI=1` the server runs from `npx tsx server/index.ts` (Vite dev middleware,
   "exports": {
     ".": "./src/index.ts",
     "./host": "./src/host/index.ts",
-    "./api": "./src/api/index.ts"
+    "./api": "./src/api/index.ts",
+    "./pages/*": "./src/pages/*.tsx"
+  },
+  "dependencies": {
+    "@mirror-gui/shared": "1.0.0"
   },
   "peerDependencies": {
     "@patternfly/react-core": "^6",
@@ -143,7 +257,7 @@ With `CI=1` the server runs from `npx tsx server/index.ts` (Vite dev middleware,
 `packages/ui/src/host/types.ts`:
 
 ```ts
-export type HttpMethod = 'GET' | 'POST' | 'DELETE';
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 export type NotifyVariant = 'success' | 'danger' | 'warning' | 'info';
 
@@ -153,7 +267,6 @@ export type PageId = 'dashboard' | 'config' | 'operations' | 'history' | 'settin
 export interface RequestOptions {
   body?: unknown;
   params?: Record<string, string>;
-  formData?: FormData;
 }
 
 /**
@@ -206,9 +319,8 @@ export * from './host';
 
 - [ ] **Step 2: Register the workspace in the root config**
 
-In `package.json`:
-- Add after `"type": "module",`: `"workspaces": ["packages/*"],`
-- Add to `dependencies` (alphabetical position, first entry): `"@mirror-gui/ui": "1.0.0",`
+In `package.json` (`"workspaces"` already exists from Task 0):
+- Add to `dependencies` (alphabetical position, right after `@mirror-gui/shared`): `"@mirror-gui/ui": "1.0.0",`
 - Change the `lint` and `lint:fix` globs to include the package:
 
 ```json
@@ -226,7 +338,7 @@ In `vitest.config.ts`, change `include: ['server/**/*.ts'],` under `coverage` to
       include: ['server/**/*.ts', 'src/host/**/*.ts', 'packages/ui/src/host/**/*.ts', 'packages/ui/src/api/**/*.ts'],
 ```
 
-In `Dockerfile`, both stages have a `COPY package*.json ./` line followed by `npm ci`. Directly after **each** of those two lines add:
+In `Dockerfile`, directly after **each** of the two `COPY packages/shared/package.json ./packages/shared/package.json` lines added in Task 0, add:
 
 ```dockerfile
 COPY packages/ui/package.json ./packages/ui/package.json
@@ -235,7 +347,7 @@ COPY packages/ui/package.json ./packages/ui/package.json
 (npm workspaces need every workspace's `package.json` present for `npm ci`. The builder stage later copies the full `packages/` via `COPY . .`; the runtime stage only needs the manifest because the server never imports the UI.)
 
 Run: `npm install`
-Expected: completes; `git diff package-lock.json` shows only the `@mirror-gui/ui` workspace entries (`"packages/ui"` and a `node_modules/@mirror-gui/ui` link). `ls -l node_modules/@mirror-gui/ui` shows a symlink to `../../packages/ui`. If any other package version changes in the lockfile, stop and report.
+Expected: completes; `git diff package-lock.json` shows only the `@mirror-gui/ui` workspace entries (`"packages/ui"`, its `@mirror-gui/shared` dependency, and a `node_modules/@mirror-gui/ui` link). `ls -l node_modules/@mirror-gui/ui` shows a symlink to `../../packages/ui`. If any other package version changes in the lockfile, stop and report.
 
 - [ ] **Step 3: Write the failing tests for the standalone host**
 
@@ -291,19 +403,18 @@ describe('createStandaloneHost.request', () => {
     await expect(host.request('GET', '/operations/history')).resolves.toBeNull();
   });
 
-  it('sends formData as the request body when given', async () => {
+  it('sends PUT with a JSON body (destination registry credentials use it)', async () => {
     const seen: InternalAxiosRequestConfig[] = [];
     const http = httpWith(config => {
       seen.push(config);
-      return respond(config, 200, {});
+      return respond(config, 200, { message: 'Registry credentials saved' });
     });
     const host = createStandaloneHost({ notify: vi.fn(), http });
-    const form = new FormData();
-    form.append('name', 'x');
 
-    await host.request('POST', '/config/upload', { formData: form });
+    await host.request('PUT', '/registry-credentials', { body: { registry: 'quay.example.com', username: 'u', password: 'p' } });
 
-    expect(seen[0].data).toBe(form);
+    expect(seen[0].method).toBe('put');
+    expect(JSON.parse(seen[0].data as string)).toEqual({ registry: 'quay.example.com', username: 'u', password: 'p' });
   });
 
   it('rejects with ApiError carrying the server error message and status', async () => {
@@ -490,7 +601,7 @@ export function createStandaloneHost(options: {
           method,
           url: path,
           params: requestOptions.params,
-          data: requestOptions.formData ?? requestOptions.body,
+          data: requestOptions.body,
         });
         return response.data;
       } catch (error) {
@@ -589,10 +700,12 @@ git commit -m "feat(ui): add @mirror-gui/ui workspace with host adapter and stan
   - config: `listConfigs(): Promise<ConfigFile[]>`, `saveConfig(name: string, config: string): Promise<unknown>`, `deleteConfig(filename: string): Promise<unknown>`, `configDownloadUrl(filename: string): string`
   - catalogs: `listCatalogs(): Promise<CatalogInfo[]>`, `listDetailedOperators(catalogUrl: string): Promise<DetailedOperator[]>`, `getOperatorChannels(operatorName: string, catalogUrl: string): Promise<any>`, `getOperatorVersions(operatorName: string, catalogUrl: string, channel: string): Promise<{ versions?: string[] }>`, `getOperatorDependencies(operatorName: string, catalogUrl: string): Promise<{ dependencies?: OperatorDependency[] }>`, `getCatalogSyncStatus(): Promise<CatalogSyncStatus>`, `startCatalogSync(): Promise<unknown>`, `deleteCatalogSyncData(): Promise<{ message: string }>`
   - system: `getStats(): Promise<Stats>`, `getSystemStatus(): Promise<SystemStatus>`, `getSystemInfo(): Promise<SystemInfo>`, `listMirrorFolders(): Promise<{ folders?: string[] }>`, `createMirrorFolder(name: string): Promise<unknown>`, `cleanupCache(): Promise<unknown>`
-  - settings: `getPullSecretStatus(): Promise<PullSecretStatus>`, `getPullSecretContent(): Promise<{ content?: string }>`, `savePullSecret(content: string): Promise<unknown>`, `deletePullSecret(): Promise<unknown>`, `listRegistries(): Promise<{ registries?: RegistryEntry[] }>`, `verifyRegistry(registry: string): Promise<{ status: RegistryEntry['status']; error?: string }>`
+  - settings: `getPullSecretStatus(): Promise<PullSecretStatus>`, `getPullSecretContent(): Promise<{ content?: string }>`, `savePullSecret(content: string): Promise<unknown>`, `deletePullSecret(): Promise<unknown>`, `listRegistries(): Promise<{ registries?: RegistryEntry[] }>`, `verifyRegistry(registry: string): Promise<{ status: RegistryEntry['status']; error?: string }>`, `listRegistryCredentials(): Promise<RegistryCredentialsList>`, `saveRegistryCredential(credential: NewRegistryCredential): Promise<unknown>`, `deleteRegistryCredential(registry: string): Promise<unknown>`, `verifyRegistryCredential(registry: string): Promise<{ registry: string; status: RegistryEntry['status']; error?: string }>`
   - All of the above exported from `@mirror-gui/ui/api` and re-exported from `@mirror-gui/ui`.
   - `type Api` (all of the above with `host` removed), `bindApi(host: MirrorGuiHost): Api`, `useApi(): Api`
-  - Types: `Operation`, `OperationLogs`, `OperationDetails`, `StartOperationRequest`, `OptionalFlagsPayload`, `ConfigFile`, `CatalogInfo`, `DetailedOperator`, `OperatorDependency`, `CatalogSyncStatus`, `CatalogSyncDiffEntry`, `Stats`, `SystemStatus`, `SystemInfo`, `PullSecretStatus`, `RegistryEntry`
+  - Types: `Operation`, `OperationLogs`, `OperationDetails`, `StartOperationRequest`, `OptionalFlagsPayload`, `ConfigFile`, `CatalogInfo`, `DetailedOperator`, `OperatorDependency`, `CatalogSyncStatus`, `CatalogSyncDiffEntry`, `Stats`, `SystemStatus`, `SystemInfo`, `PullSecretStatus`, `RegistryEntry`, `DestinationCredential`, `RegistryCredentialsList`, `NewRegistryCredential`
+
+The registry-credentials routes come from the mirror-to-mirror merge (`app.get/put('/api/registry-credentials'`, `app.delete('/api/registry-credentials/:registry'`, `app.post('/api/registry-credentials/verify'` in `server/index.ts`). As with every route below, if the server disagrees with this plan, the server is right.
 
 - [ ] **Step 1: Write the shared fake host**
 
@@ -651,9 +764,15 @@ describe('operations client routes', () => {
     expect(request).toHaveBeenCalledWith(method, path, undefined);
   });
 
-  it('startOperation posts the request body unchanged', async () => {
+  it('startOperation posts the request body unchanged, including mode and destination', async () => {
     const { host, request } = fakeHost({ id: 'op-1', status: 'running' });
-    const body = { configFile: 'a.yaml', mirrorDestinationSubdir: 'run1', optionalFlags: { retryTimes: 3 } };
+    const body = {
+      configFile: 'a.yaml',
+      mode: 'mirrorToMirror' as const,
+      destinationRegistry: 'quay.example.com:5000/mirror',
+      skipDestTlsVerify: true,
+      optionalFlags: { retryTimes: 3 },
+    };
     const result = await startOperation(host, body);
     expect(request).toHaveBeenCalledWith('POST', '/operations/start', { body });
     expect(result).toEqual({ id: 'op-1', status: 'running' });
@@ -764,6 +883,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getStats, getSystemStatus, getSystemInfo, listMirrorFolders, createMirrorFolder, cleanupCache,
   getPullSecretStatus, getPullSecretContent, savePullSecret, deletePullSecret, listRegistries, verifyRegistry,
+  listRegistryCredentials, saveRegistryCredential, deleteRegistryCredential, verifyRegistryCredential,
 } from '@mirror-gui/ui/api';
 import { fakeHost } from './fakeHost';
 
@@ -778,6 +898,7 @@ describe('system and settings client', () => {
     ['getPullSecretContent', getPullSecretContent, 'GET', '/pull-secret/content'],
     ['deletePullSecret', deletePullSecret, 'DELETE', '/pull-secret'],
     ['listRegistries', listRegistries, 'GET', '/registries'],
+    ['listRegistryCredentials', listRegistryCredentials, 'GET', '/registry-credentials'],
   ] as const)('%s hits %s %s', async (_name, fn, method, path) => {
     const { host, request } = fakeHost();
     await fn(host);
@@ -792,6 +913,18 @@ describe('system and settings client', () => {
     expect(request).toHaveBeenNthCalledWith(1, 'POST', '/mirror-folders', { body: { name: 'run-2026' } });
     expect(request).toHaveBeenNthCalledWith(2, 'POST', '/pull-secret', { body: { content: '{"auths":{}}' } });
     expect(request).toHaveBeenNthCalledWith(3, 'POST', '/registries/verify', { body: { registry: 'registry.redhat.io' } });
+  });
+
+  it('manages destination registry credentials with the routes and bodies the server reads', async () => {
+    const { host, request } = fakeHost();
+    const credential = { registry: 'quay.example.com:5000', username: 'mirror', password: 's3cret' };
+    await saveRegistryCredential(host, credential);
+    await verifyRegistryCredential(host, 'quay.example.com:5000');
+    await deleteRegistryCredential(host, 'quay.example.com:5000');
+    expect(request).toHaveBeenNthCalledWith(1, 'PUT', '/registry-credentials', { body: credential });
+    expect(request).toHaveBeenNthCalledWith(2, 'POST', '/registry-credentials/verify', { body: { registry: 'quay.example.com:5000' } });
+    // The registry is a path segment: ':' must be encoded exactly once, as the page does today.
+    expect(request).toHaveBeenNthCalledWith(3, 'DELETE', '/registry-credentials/quay.example.com%3A5000', undefined);
   });
 });
 ```
@@ -816,12 +949,13 @@ describe('bindApi', () => {
     const api = bindApi(fakeHost().host);
     expect(Object.keys(api).sort()).toEqual([
       'cleanupCache', 'configDownloadUrl', 'createMirrorFolder', 'deleteCatalogSyncData', 'deleteConfig',
-      'deleteOperation', 'deletePullSecret', 'getCatalogSyncStatus', 'getOperationDetails', 'getOperationHistory',
-      'getOperationLogs', 'getOperatorChannels', 'getOperatorDependencies', 'getOperatorVersions',
-      'getPullSecretContent', 'getPullSecretStatus', 'getRecentOperations', 'getStats', 'getSystemInfo',
-      'getSystemStatus', 'listCatalogs', 'listConfigs', 'listDetailedOperators', 'listMirrorFolders',
-      'listOperations', 'listRegistries', 'operationLogStreamUrl', 'saveConfig', 'savePullSecret',
-      'startCatalogSync', 'startOperation', 'stopOperation', 'verifyRegistry',
+      'deleteOperation', 'deletePullSecret', 'deleteRegistryCredential', 'getCatalogSyncStatus',
+      'getOperationDetails', 'getOperationHistory', 'getOperationLogs', 'getOperatorChannels',
+      'getOperatorDependencies', 'getOperatorVersions', 'getPullSecretContent', 'getPullSecretStatus',
+      'getRecentOperations', 'getStats', 'getSystemInfo', 'getSystemStatus', 'listCatalogs', 'listConfigs',
+      'listDetailedOperators', 'listMirrorFolders', 'listOperations', 'listRegistries', 'listRegistryCredentials',
+      'operationLogStreamUrl', 'saveConfig', 'savePullSecret', 'saveRegistryCredential', 'startCatalogSync',
+      'startOperation', 'stopOperation', 'verifyRegistry', 'verifyRegistryCredential',
     ]);
   });
 });
@@ -839,12 +973,17 @@ Expected: FAIL; `@mirror-gui/ui/api` cannot be resolved (`packages/ui/src/api/in
 ```ts
 /** API payload types. Shapes mirror what server/index.ts returns. */
 
+import type { OperationMode } from '@mirror-gui/shared/operationModes';
+
 export type OperationStatus = 'running' | 'success' | 'failed' | 'stopped';
 
 export interface Operation {
   id: string;
   name: string;
   configFile: string;
+  /** Absent on records created before modes existed; read as 'mirrorToDisk'. */
+  mode?: OperationMode;
+  destinationRegistry?: string;
   status: OperationStatus;
   startedAt: string;
   completedAt?: string;
@@ -877,7 +1016,10 @@ export interface OptionalFlagsPayload {
 
 export interface StartOperationRequest {
   configFile: string;
+  mode?: OperationMode;
   mirrorDestinationSubdir?: string;
+  destinationRegistry?: string;
+  skipDestTlsVerify?: boolean;
   optionalFlags?: OptionalFlagsPayload;
 }
 
@@ -964,9 +1106,30 @@ export interface RegistryEntry {
   status?: 'authenticated' | 'failed' | 'verifying' | 'not_verified';
   error?: string;
 }
+
+export interface DestinationCredential {
+  registry: string;
+  username: string;
+  status?: RegistryEntry['status'];
+  error?: string;
+}
+
+export interface RegistryCredentialsList {
+  /** True when the credentials file is mounted from a Secret and cannot be edited in the UI. */
+  managedExternally: boolean;
+  path: string | null;
+  credentials: DestinationCredential[];
+  error?: string;
+}
+
+export interface NewRegistryCredential {
+  registry: string;
+  username: string;
+  password: string;
+}
 ```
 
-Before moving on, check the `DetailedOperator`, `OperatorDependency` and `CatalogInfo` shapes against what the server's `/api/operators?detailed=true`, `/api/operators/:operator/dependencies`, and `/api/catalogs` handlers return (`server/index.ts` lines 1266-1358 and 1511-1565). If a field the pages read is named differently, follow the server.
+Before moving on, check `StartOperationRequest`, `DestinationCredential`, and `RegistryCredentialsList` against the merged `server/index.ts` (`/api/operations/start` and `/api/registry-credentials` handlers) and the merged Settings page's local `DestinationCredential` interface. Then check the `DetailedOperator`, `OperatorDependency` and `CatalogInfo` shapes against what the server's `/api/operators?detailed=true`, `/api/operators/:operator/dependencies`, and `/api/catalogs` handlers return (`server/index.ts` lines 1266-1358 and 1511-1565). If a field the pages read is named differently, follow the server.
 
 - [ ] **Step 5: Write the client modules**
 
@@ -1100,7 +1263,7 @@ export const cleanupCache = (host: MirrorGuiHost) =>
 
 ```ts
 import type { MirrorGuiHost } from '../host/types';
-import type { PullSecretStatus, RegistryEntry } from './types';
+import type { NewRegistryCredential, PullSecretStatus, RegistryCredentialsList, RegistryEntry } from './types';
 
 export const getPullSecretStatus = (host: MirrorGuiHost) =>
   host.request<PullSecretStatus>('GET', '/pull-secret/status', undefined);
@@ -1119,6 +1282,20 @@ export const listRegistries = (host: MirrorGuiHost) =>
 
 export const verifyRegistry = (host: MirrorGuiHost, registry: string) =>
   host.request<{ status: RegistryEntry['status']; error?: string }>('POST', '/registries/verify', { body: { registry } });
+
+/** Credentials oc-mirror uses to push to a destination registry (mirror-to-mirror, disk-to-mirror). */
+export const listRegistryCredentials = (host: MirrorGuiHost) =>
+  host.request<RegistryCredentialsList>('GET', '/registry-credentials', undefined);
+
+export const saveRegistryCredential = (host: MirrorGuiHost, credential: NewRegistryCredential) =>
+  host.request<unknown>('PUT', '/registry-credentials', { body: credential });
+
+export const deleteRegistryCredential = (host: MirrorGuiHost, registry: string) =>
+  host.request<unknown>('DELETE', `/registry-credentials/${encodeURIComponent(registry)}`, undefined);
+
+export const verifyRegistryCredential = (host: MirrorGuiHost, registry: string) =>
+  host.request<{ registry: string; status: RegistryEntry['status']; error?: string }>(
+    'POST', '/registry-credentials/verify', { body: { registry } });
 ```
 
 `packages/ui/src/api/index.ts`:
@@ -1203,10 +1380,11 @@ Every page task follows the same mechanical recipe. The tables in each task list
    ```
    and each `addSuccessAlert(x)` / `addDangerAlert(x)` / `addWarningAlert(x)` / `addInfoAlert(x)` with `host.notify('success' | 'danger' | 'warning' | 'info', x)`.
 5. Each `const response = await axios.get(...)` becomes `const data = await api.fn(...)`, and the following `response.data` becomes `data`. Keep surrounding logic (guards like `Array.isArray`, `|| ''`, `?? []`) byte-for-byte.
-6. Error messages: `error.response?.data?.error`, `err.response?.data?.message`, and `err.response?.data?.error || err.response?.data?.message || err.message` all become `(error as ApiError).message` (import `ApiError` from `'../host'`). `ApiError.message` is already `body.error ?? body.message ?? transport message`. Where the original had a literal fallback (`|| 'Failed to start catalog sync'`), keep it: `(error as ApiError).message || 'Failed to start catalog sync'`.
+6. Error messages: `error.response?.data?.error`, `err.response?.data?.message`, and `err.response?.data?.error || err.response?.data?.message || err.message` all become `(error as ApiError).message` (import `ApiError` from `'../host'`). `ApiError.message` is already `body.error ?? body.message ?? transport message` and is never empty. Where the original had a literal fallback (`error.response?.data?.error || 'Failed to start catalog sync'`), drop the literal: it can no longer be reached, so keeping it would be dead code. This is an accepted, user-visible change (the spec records it): when a response has no `error` field, the user sees the transport message (for example `Request failed with status code 500`) instead of the literal. List every dropped literal in the task's commit message.
 7. Dependency arrays: wherever an alert function (`addDangerAlert`, etc.) appears in a `useCallback`/`useEffect` dependency list, replace it with `host`; wherever a callback now calls `api.*`, add `api` to its dependency list if the list is non-empty. Do not add dependencies to lists that are `[]` with an `eslint-disable-next-line react-hooks/exhaustive-deps` comment; leave those as they are.
-8. In `src/App.tsx`, change the page's `lazy(() => import('./components/<Page>'))` to `lazy(() => import('@mirror-gui/ui').then(m => ({ default: m.<Page> })))`, and add `export { default as <Page> } from './pages/<Page>';` to `packages/ui/src/index.ts`.
-9. Verify with `npm run lint && npm run build && npm test` and the task's E2E specs. Search the moved file: `grep -n "axios\|/api\|useAlerts" packages/ui/src/pages/<Page>.tsx` must print nothing.
+8. In `src/App.tsx`, change the page's `lazy(() => import('./components/<Page>'))` to `lazy(() => import('@mirror-gui/ui/pages/<Page>'))`. Importing from the page subpath, not the `@mirror-gui/ui` barrel, keeps Vite's one-chunk-per-page split. Also add `export { default as <Page> } from './pages/<Page>';` to `packages/ui/src/index.ts`; the console plugin will use the barrel.
+9. Imports of `'../../server/operationModes'` (added by the mirror-to-mirror merge) become `'@mirror-gui/shared/operationModes'`, with the same imported names.
+10. Verify with `npm run lint && npm run build && npm test` and the task's E2E specs. Search the moved file: `grep -n "axios\|/api\|useAlerts\|server/" packages/ui/src/pages/<Page>.tsx` must print nothing. Check the split: `ls dist/assets | grep -c '^<Page>-.*\.js$'` prints `1`.
 
 ---
 
@@ -1214,7 +1392,7 @@ Every page task follows the same mechanical recipe. The tables in each task list
 
 **Files:**
 - Move: `src/components/Dashboard.tsx` to `packages/ui/src/pages/Dashboard.tsx`
-- Modify: `src/App.tsx:38`, `packages/ui/src/index.ts`
+- Modify: `src/App.tsx:39`, `packages/ui/src/index.ts`
 - Test: existing `tests/e2e/dashboard.spec.ts`, `tests/e2e/navigation.spec.ts`
 
 **Interfaces:**
@@ -1242,10 +1420,10 @@ If TypeScript reports a mismatch because Dashboard's old `Operation.duration` wa
 
 - [ ] **Step 3: Point the shell at the package**
 
-`src/App.tsx` line 38 becomes:
+`src/App.tsx` line 39 becomes:
 
 ```ts
-const Dashboard = lazy(() => import('@mirror-gui/ui').then(m => ({ default: m.Dashboard })));
+const Dashboard = lazy(() => import('@mirror-gui/ui/pages/Dashboard'));
 ```
 
 Append to `packages/ui/src/index.ts`:
@@ -1279,15 +1457,15 @@ git commit -m "refactor(ui): move Dashboard to @mirror-gui/ui"
 **Files:**
 - Move: `src/components/History.tsx` to `packages/ui/src/pages/History.tsx`
 - Modify: `src/App.tsx` (History lazy import), `packages/ui/src/index.ts`
-- Test: existing `tests/e2e/history.spec.ts`
+- Test: existing `tests/e2e/history.spec.ts`, `tests/e2e/historyModes.spec.ts`
 
 **Interfaces:**
-- Consumes: `useApi` (`getOperationHistory`, `getOperationLogs`, `operationLogStreamUrl`, `getOperationDetails`, `deleteOperation`, `configDownloadUrl`), `useHost` (`notify`), types `Operation`, `OperationDetails`.
+- Consumes: `useApi` (`getOperationHistory`, `getOperationLogs`, `operationLogStreamUrl`, `getOperationDetails`, `deleteOperation`, `configDownloadUrl`), `useHost` (`notify`), types `Operation`, `OperationDetails`; `OPERATION_MODE_LABELS`, `isRegistryTargetMode`, `OperationMode` from `@mirror-gui/shared/operationModes`.
 - Produces: `History` export from `@mirror-gui/ui`.
 
 - [ ] **Step 1: Baseline**
 
-Run: `CI=1 npx playwright test tests/e2e/history.spec.ts`
+Run: `CI=1 npx playwright test tests/e2e/history.spec.ts tests/e2e/historyModes.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 2: Move and rewire the page**
@@ -1307,6 +1485,11 @@ Apply the page migration rules. Delete local interfaces `Operation` and `Operati
 | 273 | `addDangerAlert('Failed to delete some operations');` | `host.notify('danger', 'Failed to delete some operations');` |
 | 380 | ``href={`/api/config/download/${encodeURIComponent(configName)}`}`` | `href={api.configDownloadUrl(configName)}` |
 | 655 | ``href={`/api/config/download/${encodeURIComponent(op.configFile)}`}`` | `href={api.configDownloadUrl(op.configFile)}` |
+| *(m2m)* | `import { OPERATION_MODE_LABELS, isRegistryTargetMode, type OperationMode } from '../../server/operationModes';` | same names from `'@mirror-gui/shared/operationModes'` |
+
+The merged page's local `Operation` interface also has `mode` and `destinationRegistry`; the shared `Operation` type has both, so delete the local one as planned.
+
+Operation ids in `deleteOperation` and the log URLs are now passed through `encodeURIComponent`. Server ids are generated UUIDs, which it leaves unchanged.
 
 If `errorMessage` now being `string | null` causes a type error where it is rendered or passed, use `op.errorMessage ?? undefined` at that use site.
 
@@ -1315,7 +1498,7 @@ If `errorMessage` now being `string | null` causes a type error where it is rend
 In `src/App.tsx`, the History lazy import becomes:
 
 ```ts
-const History = lazy(() => import('@mirror-gui/ui').then(m => ({ default: m.History })));
+const History = lazy(() => import('@mirror-gui/ui/pages/History'));
 ```
 
 Append to `packages/ui/src/index.ts`:
@@ -1332,7 +1515,7 @@ Expected: no lint errors, build succeeds, tests pass.
 Run: `grep -n "axios\|/api\|useAlerts" packages/ui/src/pages/History.tsx`
 Expected: no output.
 
-Run: `CI=1 npx playwright test tests/e2e/history.spec.ts tests/e2e/navigation.spec.ts`
+Run: `CI=1 npx playwright test tests/e2e/history.spec.ts tests/e2e/historyModes.spec.ts tests/e2e/navigation.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1349,20 +1532,20 @@ git commit -m "refactor(ui): move History to @mirror-gui/ui"
 **Files:**
 - Move: `src/components/Settings.tsx` to `packages/ui/src/pages/Settings.tsx`
 - Modify: `src/App.tsx` (Settings lazy import), `packages/ui/src/index.ts`
-- Test: existing `tests/e2e/settings.spec.ts`, `tests/e2e/pullSecret.spec.ts`
+- Test: existing `tests/e2e/settings.spec.ts`, `tests/e2e/pullSecret.spec.ts`, `tests/e2e/registryCredentials.spec.ts`
 
 **Interfaces:**
-- Consumes: `useApi` (`listCatalogs`, `getCatalogSyncStatus`, `startCatalogSync`, `deleteCatalogSyncData`, `listRegistries`, `verifyRegistry`, `getPullSecretStatus`, `getPullSecretContent`, `deletePullSecret`, `savePullSecret`, `getSystemInfo`, `cleanupCache`), `useHost` (`notify`), types `RegistryEntry`, `SystemInfo`, `CatalogSyncDiffEntry`, `CatalogSyncStatus`, `CatalogInfo`, `PullSecretStatus`, `ApiError`.
+- Consumes: `useApi` (`listCatalogs`, `getCatalogSyncStatus`, `startCatalogSync`, `deleteCatalogSyncData`, `listRegistries`, `verifyRegistry`, `getPullSecretStatus`, `getPullSecretContent`, `deletePullSecret`, `savePullSecret`, `getSystemInfo`, `cleanupCache`, `listRegistryCredentials`, `saveRegistryCredential`, `deleteRegistryCredential`, `verifyRegistryCredential`), `useHost` (`notify`), types `RegistryEntry`, `DestinationCredential`, `SystemInfo`, `CatalogSyncDiffEntry`, `CatalogSyncStatus`, `CatalogInfo`, `PullSecretStatus`, `ApiError`.
 - Produces: `Settings` export from `@mirror-gui/ui`.
 
 - [ ] **Step 1: Baseline**
 
-Run: `CI=1 npx playwright test tests/e2e/settings.spec.ts tests/e2e/pullSecret.spec.ts`
+Run: `CI=1 npx playwright test tests/e2e/settings.spec.ts tests/e2e/pullSecret.spec.ts tests/e2e/registryCredentials.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 2: Move and rewire the page**
 
-Apply the page migration rules. Delete local `RegistryEntry`, `SystemInfo`, `CatalogSyncDiffEntry`, `CatalogSyncStatus` interfaces; keep `shellSingleQuote`. Import the types from `'../api/types'`. Keep `useSearchParams` from `react-router-dom` as is.
+Apply the page migration rules. Delete local `RegistryEntry`, `DestinationCredential`, `SystemInfo`, `CatalogSyncDiffEntry`, `CatalogSyncStatus` interfaces; keep `shellSingleQuote`. Import the types from `'../api/types'`. Keep `useSearchParams` from `react-router-dom` as is.
 
 State type adjustments (needed because the shared types follow the server):
 - Line 103-111: initial `systemInfo` state becomes `{ ocMirrorVersion: '', systemArchitecture: '', availableDiskSpace: 0, totalDiskSpace: 0, hostDataDir: '', cacheDir: '', hostCacheDir: '', cacheSizeBytes: 0 }`. Settings never renders the disk-space fields (`grep -n "availableDiskSpace\|totalDiskSpace"` only matches the type and this initializer), so `''` to `0` has no visible effect.
@@ -1376,21 +1559,29 @@ State type adjustments (needed because the shared types follow the server):
 | 157-159 | `const response = await axios.get('/api/catalogs/sync/status'); setCatalogSyncStatus(response.data); if (response.data.status === 'running' ...` | `const data = await api.getCatalogSyncStatus(); setCatalogSyncStatus(data); if (data.status === 'running' ...` |
 | 162-164 | `const r = await axios.get('/api/catalogs/sync/status'); setCatalogSyncStatus(r.data); if (r.data.status !== 'running' ...` | `const r = await api.getCatalogSyncStatus(); setCatalogSyncStatus(r); if (r.status !== 'running' ...` |
 | 186 | `await axios.post('/api/catalogs/sync');` | `await api.startCatalogSync();` |
-| 194 | `const msg = error.response?.data?.error \|\| 'Failed to start catalog sync';` | `const msg = (error as ApiError).message \|\| 'Failed to start catalog sync';` |
+| 194 | `const msg = error.response?.data?.error \|\| 'Failed to start catalog sync';` | `const msg = (error as ApiError).message;` (rule 6: literal dropped) |
 | 195, 238, 309 | `addDangerAlert(msg);` | `host.notify('danger', msg);` |
 | 216, 220 | `addSuccessAlert(...)` / `addDangerAlert(...)` (sync completed/failed) | `host.notify('success', ...)` / `host.notify('danger', ...)`, same template strings |
 | 232-233 | `const response = await axios.delete('/api/catalogs/sync/data'); addSuccessAlert(response.data.message);` | `const data = await api.deleteCatalogSyncData(); host.notify('success', data.message);` |
-| 237 | `const msg = error.response?.data?.error \|\| 'Failed to clear sync data';` | `const msg = (error as ApiError).message \|\| 'Failed to clear sync data';` |
+| 237 | `const msg = error.response?.data?.error \|\| 'Failed to clear sync data';` | `const msg = (error as ApiError).message;` (rule 6: literal dropped) |
 | 250-251 | `const response = await axios.get('/api/registries'); setRegistries(response.data.registries \|\| []);` | `const data = await api.listRegistries(); setRegistries(data.registries \|\| []);` |
 | 262-264 | `const response = await axios.post('/api/registries/verify', { registry }); ... status: response.data.status, error: response.data.error` | `const data = await api.verifyRegistry(registry); ... status: data.status, error: data.error` |
 | 281-287 | `const [statusRes, contentRes] = await Promise.all([axios.get('/api/pull-secret/status'), axios.get('/api/pull-secret/content')]); setPullSecretStatus(statusRes.data); if (contentRes.data.content) { setPullSecretContent(contentRes.data.content); }` | `const [status, content] = await Promise.all([api.getPullSecretStatus(), api.getPullSecretContent()]); setPullSecretStatus(status); if (content.content) { setPullSecretContent(content.content); }` |
 | 298-299 | `await axios.delete('/api/pull-secret'); addSuccessAlert('Pull secret removed successfully!');` | `await api.deletePullSecret(); host.notify('success', 'Pull secret removed successfully!');` |
 | 301-302 | `await axios.post('/api/pull-secret', { content: pullSecretContent }); addSuccessAlert('Pull secret saved successfully!');` | `await api.savePullSecret(pullSecretContent); host.notify('success', 'Pull secret saved successfully!');` |
-| 308 | `const msg = error.response?.data?.error \|\| 'Failed to save pull secret';` | `const msg = (error as ApiError).message \|\| 'Failed to save pull secret';` |
+| 308 | `const msg = error.response?.data?.error \|\| 'Failed to save pull secret';` | `const msg = (error as ApiError).message;` (rule 6: literal dropped) |
 | 326-327 | `const response = await axios.get('/api/system/info'); setSystemInfo(response.data);` | `const data = await api.getSystemInfo(); setSystemInfo(data);` |
 | 336, 347, 357, 359, 824 | `addDangerAlert(...)` / `addSuccessAlert(...)` (clipboard, validation) | `host.notify('danger' \| 'success', ...)`, same strings |
 | 368-369 | `await axios.post('/api/cache/cleanup'); addSuccessAlert('Cache cleaned up successfully!');` | `await api.cleanupCache(); host.notify('success', 'Cache cleaned up successfully!');` |
 | 373 | `addDangerAlert('Failed to cleanup cache');` | `host.notify('danger', 'Failed to cleanup cache');` |
+| *(m2m)* | `const response = await axios.get('/api/registry-credentials');` then `response.data.credentials`, `response.data.managedExternally`, `response.data.path`, `response.data.error` | `const data = await api.listRegistryCredentials();` then `data.credentials`, `data.managedExternally`, `data.path`, `data.error` (keep the existing `\|\| []`, `!!`, `\|\| null` guards) |
+| *(m2m)* | `await axios.put('/api/registry-credentials', newCredential); addSuccessAlert(...)` | `await api.saveRegistryCredential(newCredential); host.notify('success', ...)`, same template |
+| *(m2m)* | `addDangerAlert(error.response?.data?.error \|\| 'Failed to save credentials');` | `host.notify('danger', (error as ApiError).message);` (rule 6: literal dropped) |
+| *(m2m)* | ``await axios.delete(`/api/registry-credentials/${encodeURIComponent(registry)}`); addSuccessAlert(...)`` | `await api.deleteRegistryCredential(registry); host.notify('success', ...)`, same template |
+| *(m2m)* | `addDangerAlert(error.response?.data?.error \|\| 'Failed to remove credentials');` | `host.notify('danger', (error as ApiError).message);` (rule 6: literal dropped) |
+| *(m2m)* | `const response = await axios.post('/api/registry-credentials/verify', { registry });` then `response.data.status`, `response.data.error` | `const data = await api.verifyRegistryCredential(registry);` then `data.status`, `data.error` |
+
+The *(m2m)* rows were read from `feature/mirrorToMirror` before the merge. After the merge, run `grep -n "axios\|addSuccessAlert\|addDangerAlert\|addWarningAlert\|addInfoAlert" packages/ui/src/pages/Settings.tsx` once the table is applied. Any remaining hit is a call site this table missed: convert it with the same rules and list it in the commit message.
 
 Note on line 262: the page has its own function named `verifyRegistry`; calling `api.verifyRegistry(...)` through the `api` object avoids the name clash. Do not destructure `api`.
 
@@ -1399,7 +1590,7 @@ Catch-clause typing: where a catch currently declares `error: any` or casts to a
 - [ ] **Step 3: Point the shell at the package**
 
 ```ts
-const Settings = lazy(() => import('@mirror-gui/ui').then(m => ({ default: m.Settings })));
+const Settings = lazy(() => import('@mirror-gui/ui/pages/Settings'));
 ```
 
 Append to `packages/ui/src/index.ts`:
@@ -1416,14 +1607,20 @@ Expected: no lint errors, build succeeds, tests pass.
 Run: `grep -n "axios\|/api\|useAlerts" packages/ui/src/pages/Settings.tsx`
 Expected: no output. (The `https://console.redhat.com/...` link at line 454 does not match `/api`.)
 
-Run: `CI=1 npx playwright test tests/e2e/settings.spec.ts tests/e2e/pullSecret.spec.ts tests/e2e/dashboard.spec.ts`
+Run: `CI=1 npx playwright test tests/e2e/settings.spec.ts tests/e2e/pullSecret.spec.ts tests/e2e/registryCredentials.spec.ts tests/e2e/dashboard.spec.ts`
 Expected: PASS (dashboard included because its pull-secret link navigates to Settings with `?tab=pull-secret`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add -A src/components/Settings.tsx packages/ui src/App.tsx
-git commit -m "refactor(ui): move Settings to @mirror-gui/ui"
+git commit -m "refactor(ui): move Settings to @mirror-gui/ui
+
+When a failed response has no JSON error field, these alerts now show
+the transport message (ApiError.message) instead of a fixed text:
+'Failed to start catalog sync', 'Failed to clear sync data',
+'Failed to save pull secret', 'Failed to save credentials',
+'Failed to remove credentials'."
 ```
 
 ---
@@ -1433,15 +1630,15 @@ git commit -m "refactor(ui): move Settings to @mirror-gui/ui"
 **Files:**
 - Move: `src/components/MirrorOperations.tsx` to `packages/ui/src/pages/MirrorOperations.tsx`
 - Modify: `src/App.tsx` (MirrorOperations lazy import), `packages/ui/src/index.ts`
-- Test: existing `tests/e2e/mirrorOperations.spec.ts`, `operationLifecycle.spec.ts`, `startOperationErrors.spec.ts`, `configToOperations.spec.ts`
+- Test: existing `tests/e2e/mirrorOperations.spec.ts`, `operationLifecycle.spec.ts`, `startOperationErrors.spec.ts`, `stopOperation.spec.ts`, `configToOperations.spec.ts`, `operationModes.spec.ts`, `mirrorToMirror.spec.ts`
 
 **Interfaces:**
-- Consumes: `useApi` (`getOperationLogs`, `operationLogStreamUrl`, `listConfigs`, `listMirrorFolders`, `createMirrorFolder`, `listOperations`, `getSystemInfo`, `startOperation`, `deleteConfig`, `stopOperation`, `deleteOperation`, `configDownloadUrl`), `useHost` (`notify`), types `ConfigFile`, `Operation`, `OptionalFlagsPayload`, `ApiError`.
+- Consumes: `useApi` (`getOperationLogs`, `operationLogStreamUrl`, `listConfigs`, `listMirrorFolders`, `createMirrorFolder`, `listOperations`, `getSystemInfo`, `startOperation`, `deleteConfig`, `stopOperation`, `deleteOperation`, `configDownloadUrl`, `listRegistries`, `listRegistryCredentials`), `useHost` (`notify`), types `ConfigFile`, `Operation`, `OptionalFlagsPayload`, `ApiError`; mode helpers from `@mirror-gui/shared/operationModes`.
 - Produces: `MirrorOperations` export from `@mirror-gui/ui`.
 
 - [ ] **Step 1: Baseline**
 
-Run: `CI=1 npx playwright test tests/e2e/mirrorOperations.spec.ts tests/e2e/operationLifecycle.spec.ts tests/e2e/startOperationErrors.spec.ts tests/e2e/configToOperations.spec.ts`
+Run: `CI=1 npx playwright test tests/e2e/mirrorOperations.spec.ts tests/e2e/operationLifecycle.spec.ts tests/e2e/startOperationErrors.spec.ts tests/e2e/stopOperation.spec.ts tests/e2e/configToOperations.spec.ts tests/e2e/operationModes.spec.ts tests/e2e/mirrorToMirror.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 2: Move and rewire the page**
@@ -1474,6 +1671,12 @@ Apply the page migration rules. Delete local `ConfigFile`, `Operation`, `Optiona
 | 714, 724, 776 | `addSuccessAlert(...)` | `host.notify('success', ...)`, same strings |
 | 770 | ``ids.map(id => axios.delete(`/api/operations/${id}`))`` | `ids.map(id => api.deleteOperation(id))` |
 | 1360 | ``href={`/api/config/download/${encodeURIComponent(op.configFile)}`}`` | `href={api.configDownloadUrl(op.configFile)}` |
+| *(m2m)* | the multi-line `import { ... } from '../../server/operationModes';` | same names from `'@mirror-gui/shared/operationModes'` |
+| *(m2m)* | `axios.get('/api/registries'), axios.get('/api/registry-credentials'),` inside a `Promise.all`, then `.data` reads on each result | `api.listRegistries(), api.listRegistryCredentials(),` in the same `Promise.all`; drop `.data` from each result read |
+| *(m2m)* | `addDangerAlert(destinationError);` | `host.notify('danger', destinationError);` |
+| *(m2m)* | the `axios.post('/api/operations/start', { configFile, mode, mirrorDestinationSubdir, ...destinationRegistry/skipDestTlsVerify spread, ...optionalFlags spread })` | `api.startOperation({ ... })` with the same object literal, spreads included (this replaces row 568-574) |
+
+The *(m2m)* rows were read from `feature/mirrorToMirror` before the merge. After applying the table, run `grep -n "axios\|addSuccessAlert\|addDangerAlert\|addWarningAlert\|addInfoAlert\|server/" packages/ui/src/pages/MirrorOperations.tsx`. Any remaining hit is a call site this table missed: convert it with the same rules and list it in the commit message.
 
 `deleteOperationId` may be typed `string | null`; keep the existing null guard before the call.
 
@@ -1486,7 +1689,7 @@ Behavior notes (intended, record them in the commit message):
 - [ ] **Step 3: Point the shell at the package**
 
 ```ts
-const MirrorOperations = lazy(() => import('@mirror-gui/ui').then(m => ({ default: m.MirrorOperations })));
+const MirrorOperations = lazy(() => import('@mirror-gui/ui/pages/MirrorOperations'));
 ```
 
 Append to `packages/ui/src/index.ts`:
@@ -1503,7 +1706,7 @@ Expected: no lint errors, build succeeds, tests pass.
 Run: `grep -n "axios\|/api\|useAlerts" packages/ui/src/pages/MirrorOperations.tsx`
 Expected: no output.
 
-Run: `CI=1 npx playwright test tests/e2e/mirrorOperations.spec.ts tests/e2e/operationLifecycle.spec.ts tests/e2e/startOperationErrors.spec.ts tests/e2e/configToOperations.spec.ts`
+Run: `CI=1 npx playwright test tests/e2e/mirrorOperations.spec.ts tests/e2e/operationLifecycle.spec.ts tests/e2e/startOperationErrors.spec.ts tests/e2e/stopOperation.spec.ts tests/e2e/configToOperations.spec.ts tests/e2e/operationModes.spec.ts tests/e2e/mirrorToMirror.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1570,7 +1773,7 @@ Operator names are now passed through `encodeURIComponent` in path segments. Val
 - [ ] **Step 3: Point the shell at the package**
 
 ```ts
-const MirrorConfig = lazy(() => import('@mirror-gui/ui').then(m => ({ default: m.MirrorConfig })));
+const MirrorConfig = lazy(() => import('@mirror-gui/ui/pages/MirrorConfig'));
 ```
 
 Append to `packages/ui/src/index.ts`:
@@ -1609,7 +1812,7 @@ git commit -m "refactor(ui): move MirrorConfig and YamlHighlighter to @mirror-gu
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: an ESLint config block that fails the build if `packages/ui` imports axios, reaches outside the package, or hardcodes `/api`.
+- Produces: an ESLint config block that fails the build if `packages/ui` imports axios, reaches outside the package by relative path (package imports such as `@mirror-gui/shared/operationModes` stay allowed), or hardcodes `/api`.
 
 - [ ] **Step 1: Write the violating probe file (the "failing test")**
 
@@ -1678,22 +1881,25 @@ Expected: no errors.
 
 - [ ] **Step 5: Full suite**
 
-Run: `npm run build && npm test && npm run test:coverage`
-Expected: all pass; coverage report lists `src/host/standaloneHost.ts` and the `packages/ui/src/api/*.ts` files.
+Run: `npm run build && npm test && npm run test:coverage && npm run server:build`
+Expected: all pass (`server:build` with the same result as Prerequisite 4); coverage report lists `src/host/standaloneHost.ts` and the `packages/ui/src/api/*.ts` files.
+
+Run: `for p in Dashboard MirrorConfig MirrorOperations History Settings; do printf '%s ' $p; ls dist/assets | grep -c "^$p-.*\.js$"; done`
+Expected: every page prints `1` (one chunk per page, as before the move).
 
 Run: `CI=1 npm run test:e2e`
-Expected: all 12 specs pass with none skipped. If a spec is flaky, re-run that spec alone once; if it fails again, stop and report the output rather than retrying further.
+Expected: every spec under `tests/e2e/` passes with none skipped (`ls tests/e2e/*.spec.ts | wc -l` gives the count to match). If a spec is flaky, re-run that spec alone once; if it fails again, stop and report the output rather than retrying further.
 
 - [ ] **Step 6: Verify the global constraints**
 
-Run: `git diff --stat main -- server/`
-Expected: no output.
+Run: `git diff --stat portable-ui-base -- server/`
+Expected: only `server/operationModes.ts`.
 
-Run: `git diff --stat main -- tests/ | grep -v "tests/unit/standaloneHost.test.ts\|tests/unit/hostContext.test.ts\|tests/unit/api/"`
+Run: `git diff --stat portable-ui-base -- tests/ | grep -v "tests/unit/standaloneHost.test.ts\|tests/unit/hostContext.test.ts\|tests/unit/api/"`
 Expected: only the summary line, meaning no pre-existing test file changed.
 
-Run: `git diff main -- package-lock.json | grep '^[+-] *"version"'`
-Expected: only the `@mirror-gui/ui` `1.0.0` entries (no external package version changes).
+Run: `git diff portable-ui-base -- package-lock.json | grep '^[+-] *"version"'`
+Expected: only the `@mirror-gui/shared` and `@mirror-gui/ui` `1.0.0` entries (no external package version changes).
 
 Run: `ls src/components`
 Expected: `ThemeToggle.tsx` only.
