@@ -65,4 +65,28 @@ export default defineConfig(
       'eol-last': 'error',
     },
   },
+  {
+    // @mirror-gui/ui runs inside both the standalone app and the OpenShift Console.
+    // It may only reach the backend, alerts, and routes through the host adapter.
+    files: ['packages/ui/src/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        paths: [{ name: 'axios', message: 'Use useApi() from the host adapter instead of axios.' }],
+        patterns: [{
+          regex: '^(\\.\\./){2,}',
+          message: '@mirror-gui/ui must not import from outside its own package (standalone shell or server).',
+        }],
+      }],
+      'no-restricted-syntax': ['error',
+        {
+          selector: 'Literal[value=/^\\/api(\\/|$)/]',
+          message: 'Do not hardcode /api paths; add a client function in packages/ui/src/api.',
+        },
+        {
+          selector: 'TemplateLiteral > TemplateElement:first-child[value.raw=/^\\/api(\\/|$)/]',
+          message: 'Do not hardcode /api paths; add a client function in packages/ui/src/api.',
+        },
+      ],
+    },
+  },
 );
