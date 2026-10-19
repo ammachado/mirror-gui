@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
 import {
   PageSection,
   Card,
@@ -33,37 +32,9 @@ import {
   OutlinedClockIcon,
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { useAlerts } from '../AlertContext';
-
-interface Stats {
-  totalOperations: number;
-  successfulOperations: number;
-  failedOperations: number;
-  runningOperations: number;
-}
-
-interface Operation {
-  name: string;
-  configFile: string;
-  status: string;
-  startedAt: string;
-  duration: number | null;
-}
-
-interface SystemStatus {
-  ocMirrorVersion: string;
-  systemHealth: string;
-  pullSecretDetected: boolean;
-}
-
-interface SystemInfo {
-  availableDiskSpace: number;
-  totalDiskSpace: number;
-  systemArchitecture: string;
-  cacheDir: string;
-  hostCacheDir: string;
-  cacheSizeBytes: number;
-}
+import { useApi } from '../api';
+import { useHost } from '../host';
+import type { Operation, Stats, SystemInfo, SystemStatus } from '../api/types';
 
 type LabelStatus = 'success' | 'warning' | 'danger' | 'info' | 'custom';
 
@@ -141,7 +112,8 @@ const formatDuration = (seconds?: number) => {
 };
 
 const Dashboard: React.FC = () => {
-  const { addDangerAlert } = useAlerts();
+  const api = useApi();
+  const host = useHost();
   const navigate = useNavigate();
 
   const [stats, setStats] = useState<Stats>({
@@ -157,6 +129,8 @@ const Dashboard: React.FC = () => {
     pullSecretDetected: true,
   });
   const [systemInfo, setSystemInfo] = useState<SystemInfo>({
+    ocMirrorVersion: '',
+    hostDataDir: '',
     availableDiskSpace: 0,
     totalDiskSpace: 0,
     systemArchitecture: '',
@@ -175,19 +149,19 @@ const Dashboard: React.FC = () => {
 
   const fetchDashboardData = async () => {
     try {
-      const [statsRes, operationsRes, statusRes, infoRes] = await Promise.all([
-        axios.get('/api/stats'),
-        axios.get('/api/operations/recent'),
-        axios.get('/api/system/status'),
-        axios.get('/api/system/info'),
+      const [statsData, operationsData, statusData, infoData] = await Promise.all([
+        api.getStats(),
+        api.getRecentOperations(),
+        api.getSystemStatus(),
+        api.getSystemInfo(),
       ]);
-      setStats(statsRes.data);
-      setRecentOperations(operationsRes.data);
-      setSystemStatus(statusRes.data);
-      setSystemInfo(infoRes.data);
+      setStats(statsData);
+      setRecentOperations(operationsData);
+      setSystemStatus(statusData);
+      setSystemInfo(infoData);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
-      addDangerAlert('Failed to load dashboard data');
+      host.notify('danger', 'Failed to load dashboard data');
     } finally {
       setLoading(false);
     }
@@ -224,7 +198,7 @@ const Dashboard: React.FC = () => {
             isInline
             title="No pull secret detected"
             actionLinks={
-              <Button variant="link" onClick={() => navigate('/settings?tab=pull-secret')}>
+              <Button variant="link" onClick={() => navigate(`${host.pagePath('settings')}?tab=pull-secret`)}>
                 Go to Settings
               </Button>
             }
