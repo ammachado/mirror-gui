@@ -274,7 +274,12 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const DIST_DIR = path.join(__dirname, '../dist');
 const DEV_INDEX_HTML = path.join(__dirname, '../index.html');
 
-app.use(compression());
+// Server-Sent Events must reach the client as they are written; compressing them would hold
+// every event until the stream ends.
+app.use(compression({
+  filter: (req, res) =>
+    !String(res.getHeader('Content-Type') ?? '').startsWith('text/event-stream') && compression.filter(req, res),
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use((req: Request, res: Response, next: NextFunction) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);

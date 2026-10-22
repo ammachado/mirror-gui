@@ -204,5 +204,31 @@ describe('Operations lifecycle API', () => {
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/event-stream');
     });
+
+    // Browsers always accept compression. Compressing SSE holds every event until the stream
+    // ends, so live logs would only show up when the operation finishes.
+    it('sends events uncompressed and immediately when the client accepts compression', async () => {
+      const started = Date.now();
+      let firstChunkAt = 0;
+      const res = await request
+        .get(`/api/operations/${seededOpId}/logstream`)
+        .set('Accept-Encoding', 'gzip, deflate, br')
+        .buffer(true)
+        .parse((res, cb) => {
+          let data = '';
+          res.on('data', (chunk: Buffer) => {
+            firstChunkAt ||= Date.now() - started;
+            data += chunk.toString();
+          });
+          res.on('end', () => cb(null, data));
+        });
+      const endedAt = Date.now() - started;
+
+      expect(res.headers['content-encoding']).toBeUndefined();
+      expect(res.body).toContain('data: line 1');
+      // The finished operation's log is written at once; the stream closes ~2s later.
+      expect(endedAt).toBeGreaterThanOrEqual(1500);
+      expect(firstChunkAt).toBeLessThan(1000);
+    });
   });
 });
