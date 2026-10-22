@@ -1,0 +1,133 @@
+# Spike manifests for the console plugin. The backend comes from charts/mirror-gui
+# (release "mirror-gui" in namespace "mirror-gui", Service mirror-gui:3001).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mirror-gui-plugin-nginx
+  namespace: mirror-gui
+data:
+  nginx.conf: |
+    error_log /dev/stdout info;
+    pid /tmp/nginx.pid;
+    events {}
+    http {
+      access_log /dev/stdout;
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      keepalive_timeout 65;
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path /tmp/proxy;
+      fastcgi_temp_path /tmp/fastcgi;
+      uwsgi_temp_path /tmp/uwsgi;
+      scgi_temp_path /tmp/scgi;
+      server {
+        listen 9443 ssl;
+        listen [::]:9443 ssl;
+        ssl_certificate /var/cert/tls.crt;
+        ssl_certificate_key /var/cert/tls.key;
+        root /usr/share/nginx/html;
+
+        # The ConsolePlugin "backend" proxy alias lands here; the console strips its prefix.
+        # Resolve the backend per request, so the plugin starts even when the backend
+        # Service does not exist yet. nginx's resolver ignores search domains: use the FQDN.
+        resolver dns-default.openshift-dns.svc.cluster.local valid=30s;
+        set $backend http://mirror-gui.mirror-gui.svc.cluster.local:3001;
+
+        location /api/ {
+          proxy_pass $backend;
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+          # Spike workaround: the backend's compression middleware holds SSE until the
+          # response ends when gzip is accepted (no res.flush()). Fix belongs in the server.
+          proxy_set_header Accept-Encoding "";
+          # Log streaming uses Server-Sent Events, which buffering would hold back.
+          proxy_buffering off;
+          proxy_cache off;
+          proxy_read_timeout 1h;
+          client_max_body_size 50m;
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mirror-gui-plugin
+  namespace: mirror-gui
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: mirror-gui-plugin-cert
+spec:
+  selector:
+    app: mirror-gui-plugin
+  ports:
+    - name: https
+      port: 9443
+      targetPort: 9443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mirror-gui-plugin
+  namespace: mirror-gui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mirror-gui-plugin
+  template:
+    metadata:
+      labels:
+        app: mirror-gui-plugin
+    spec:
+      containers:
+        - name: nginx
+          image: image-registry.openshift-image-registry.svc:5000/mirror-gui/mirror-gui-plugin:spike
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9443
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: cert
+              mountPath: /var/cert
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+      volumes:
+        - name: cert
+          secret:
+            secretName: mirror-gui-plugin-cert
+        - name: nginx-conf
+          configMap:
+            name: mirror-gui-plugin-nginx
+---
+apiVersion: console.openshift.io/v1
+kind: ConsolePlugin
+metadata:
+  name: oc-mirror-ui
+spec:
+  displayName: Mirror GUI
+  backend:
+    type: Service
+    service:
+      name: mirror-gui-plugin
+      namespace: mirror-gui
+      port: 9443
+      basePath: /
+  proxy:
+    - alias: backend
+      # The backend does not check tokens, so do not forward the user's.
+      authorization: None
+      endpoint:
+        type: Service
+        service:
+          name: mirror-gui-plugin
+          namespace: mirror-gui
+          port: 9443

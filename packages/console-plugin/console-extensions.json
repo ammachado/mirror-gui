@@ -1,0 +1,81 @@
+[
+  {
+    "type": "console.navigation/section",
+    "properties": {
+      "id": "mirror-gui",
+      "perspective": "admin",
+      "name": "Image Mirroring",
+      "insertAfter": "compute"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "mirror-gui-dashboard",
+      "perspective": "admin",
+      "section": "mirror-gui",
+      "name": "Dashboard",
+      "href": "/oc-mirror-ui"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "mirror-gui-config",
+      "perspective": "admin",
+      "section": "mirror-gui",
+      "name": "Configuration",
+      "href": "/oc-mirror-ui/config"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "mirror-gui-operations",
+      "perspective": "admin",
+      "section": "mirror-gui",
+      "name": "Operations",
+      "href": "/oc-mirror-ui/operations"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "mirror-gui-history",
+      "perspective": "admin",
+      "section": "mirror-gui",
+      "name": "History",
+      "href": "/oc-mirror-ui/history"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "mirror-gui-settings",
+      "perspective": "admin",
+      "section": "mirror-gui",
+      "name": "Settings",
+      "href": "/oc-mirror-ui/settings"
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": { "path": "/oc-mirror-ui", "exact": true, "component": { "$codeRef": "pages.DashboardPage" } }
+  },
+  {
+    "type": "console.page/route",
+    "properties": { "path": "/oc-mirror-ui/config", "exact": true, "component": { "$codeRef": "pages.MirrorConfigPage" } }
+  },
+  {
+    "type": "console.page/route",
+    "properties": { "path": "/oc-mirror-ui/operations", "exact": true, "component": { "$codeRef": "pages.MirrorOperationsPage" } }
+  },
+  {
+    "type": "console.page/route",
+    "properties": { "path": "/oc-mirror-ui/history", "exact": true, "component": { "$codeRef": "pages.HistoryPage" } }
+  },
+  {
+    "type": "console.page/route",
+    "properties": { "path": "/oc-mirror-ui/settings", "exact": true, "component": { "$codeRef": "pages.SettingsPage" } }
+  }
+]

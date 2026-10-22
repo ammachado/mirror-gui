@@ -19,8 +19,6 @@ import {
   ModalFooter,
   ModalHeader,
   ModalVariant,
-  CodeBlock,
-  CodeBlockCode,
   Spinner,
   Title,
   Flex,
@@ -68,7 +66,7 @@ import {
   SearchIcon,
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   OPERATION_MODES,
   OPERATION_MODE_LABELS,
@@ -77,6 +75,7 @@ import {
   isRegistryTargetMode,
   type OperationMode,
 } from '@mirror-gui/shared/operationModes';
+import OperationLog from '../components/OperationLog';
 import { useApi } from '../api';
 import { ApiError, useHost } from '../host';
 import type { ConfigFile, Operation, OptionalFlagsPayload } from '../api/types';
@@ -334,6 +333,7 @@ const MirrorOperations: React.FC = () => {
   const [availableConfigs, setAvailableConfigs] = useState<ConfigFile[]>([]);
   const [runningOperation, setRunningOperation] = useState<Operation | null>(null);
   const [logs, setLogs] = useState('');
+  const [logsOperationId, setLogsOperationId] = useState<string | null>(null);
   const [logStream, setLogStream] = useState<EventSource | null>(null);
   const [loading, setLoading] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
@@ -385,6 +385,7 @@ const MirrorOperations: React.FC = () => {
   }, [logStream]);
 
   const fetchLogs = useCallback(async (operationId: string) => {
+    setLogsOperationId(operationId);
     try {
       const data = await api.getOperationLogs(operationId);
       setLogs(data.logs || 'No logs available for this operation');
@@ -423,6 +424,7 @@ const MirrorOperations: React.FC = () => {
     const eventSource = new EventSource(api.operationLogStreamUrl(operationId));
     setLogStream(eventSource);
     logStreamOperationIdRef.current = operationId;
+    setLogsOperationId(operationId);
 
     eventSource.onmessage = (event) => {
       setLogs(prevLogs => prevLogs + event.data);
@@ -590,15 +592,6 @@ const MirrorOperations: React.FC = () => {
   }, [logStream]);
 
   useEffect(() => {
-    if (showLogs && logs) {
-      const logContainer = document.getElementById('log-container');
-      if (logContainer) {
-        logContainer.scrollTop = logContainer.scrollHeight;
-      }
-    }
-  }, [logs, showLogs]);
-
-  useEffect(() => {
     const hasRunning = operations.some((op) => op.status === 'running');
     if (!hasRunning) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -656,6 +649,7 @@ const MirrorOperations: React.FC = () => {
       });
 
       host.notify('success', 'Operation started successfully!');
+      setLogsOperationId(started.id);
       setShowLogs(true);
       fetchOperations();
       void fetchFolders();
@@ -1695,10 +1689,14 @@ const MirrorOperations: React.FC = () => {
             </Flex>
           </CardHeader>
           <CardBody>
-            <div id="log-container" style={{ maxHeight: '400px', overflow: 'auto' }}>
-              <CodeBlock>
-                <CodeBlockCode>{logs || 'No logs available'}</CodeBlockCode>
-              </CodeBlock>
+            <div id="log-container">
+              <OperationLog
+                log={logs}
+                emptyText="No logs available"
+                height={400}
+                isStreaming={operations.some(op => op.id === logsOperationId && op.status === 'running')}
+                downloadName={`${logsOperationId ?? 'oc-mirror'}.log`}
+              />
             </div>
           </CardBody>
         </Card>

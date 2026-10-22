@@ -174,7 +174,7 @@ test.describe('Full Mirroring Workflow', () => {
 
     await expect(logsCard).toBeVisible({ timeout: 10_000 });
     await expect(logsCard.getByRole('heading', { name: 'Operation Logs' })).toBeVisible();
-    await expect(logsCard.locator('#log-container .pf-v6-c-code-block__code')).toBeVisible({ timeout: 10_000 });
+    await expect(logsCard.locator('#log-container .pf-v6-c-log-viewer')).toBeVisible({ timeout: 10_000 });
   });
 
   test('5 — verify operation reaches terminal state', async ({ page, request }) => {

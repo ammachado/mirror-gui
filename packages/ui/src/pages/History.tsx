@@ -19,8 +19,6 @@ import {
   DescriptionListGroup,
   DescriptionListTerm,
   DescriptionListDescription,
-  CodeBlock,
-  CodeBlockCode,
   Alert,
   Spinner,
   Title,
@@ -46,6 +44,7 @@ import {
 } from '@patternfly/react-icons';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { OPERATION_MODE_LABELS, isRegistryTargetMode } from '@mirror-gui/shared/operationModes';
+import OperationLog from '../components/OperationLog';
 import { useApi } from '../api';
 import { useHost } from '../host';
 import type { Operation, OperationDetails } from '../api/types';
@@ -63,7 +62,6 @@ const History: React.FC = () => {
   const [liveLog, setLiveLog] = useState('');
   const [logSource, setLogSource] = useState<EventSource | null>(null);
   const operationRowRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const logRef = useRef<HTMLDivElement>(null);
 
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [deleteModalTarget, setDeleteModalTarget] = useState<'selected' | 'all' | null>(null);
@@ -120,12 +118,6 @@ const History: React.FC = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedOperation]);
-
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [liveLog]);
 
   const scrollToSelectedOperation = useCallback((behavior: ScrollBehavior = 'smooth') => {
     if (!selectedOperation) {
@@ -434,11 +426,13 @@ const History: React.FC = () => {
             <Title headingLevel="h4" className="pf-v6-u-mb-sm">
               <ListIcon className="pf-v6-u-mr-sm" /> Log Output
             </Title>
-            <div ref={logRef} style={{ maxHeight: '320px', overflow: 'auto' }}>
-              <CodeBlock>
-                <CodeBlockCode>{liveLog || 'No log output available...'}</CodeBlockCode>
-              </CodeBlock>
-            </div>
+            <OperationLog
+              log={liveLog}
+              emptyText="No log output available..."
+              height={320}
+              isStreaming={selectedOperation.status === 'running'}
+              downloadName={`${selectedOperation.id}.log`}
+            />
           </div>
 
           <div className="pf-v6-u-mt-md" style={{ display: 'flex', justifyContent: 'flex-end' }}>

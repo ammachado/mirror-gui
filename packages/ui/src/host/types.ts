@@ -20,6 +20,6 @@ export interface MirrorGuiHost {
   /** Absolute URL for resources the browser loads itself (EventSource, download links). */
   apiUrl(path: string): string;
   notify(variant: NotifyVariant, title: string): void;
-  /** Host route for an app page, e.g. '/settings' standalone or '/mirror-gui/settings' in the console. */
+  /** Host route for an app page, e.g. '/settings' standalone or '/oc-mirror-ui/settings' in the console. */
   pagePath(page: PageId): string;
 }
