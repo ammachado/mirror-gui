@@ -34,6 +34,7 @@ function binaryParser(res: NodeJS.ReadableStream, callback: (err: Error | null, 
 
 describe('Artifacts API', () => {
   let request: Awaited<ReturnType<typeof getTestApp>>;
+  let symlinkSupported = false;
   const originalOverride = process.env.MIRROR_GUI_ARTIFACT_DOWNLOADS;
 
   beforeAll(async () => {
@@ -44,7 +45,13 @@ describe('Artifacts API', () => {
     await fsp.writeFile(path.join(mirrorDir, '.test-write'), 'probe');
     await fsp.writeFile(path.join(mirrorDir, 'working-dir', 'history.log'), 'history');
     await fsp.writeFile(outsideFile, OUTSIDE_SECRET);
-    await fsp.symlink(outsideFile, path.join(mirrorDir, 'leak.tar'));
+    try {
+      await fsp.symlink(outsideFile, path.join(mirrorDir, 'leak.tar'));
+      symlinkSupported = true;
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(code ?? '')) throw error;
+    }
     await fsp.mkdir(dottedMirrorDir, { recursive: true });
     await fsp.writeFile(path.join(dottedMirrorDir, 'mirror_000001.tar'), 'dotted');
 
@@ -173,7 +180,8 @@ describe('Artifacts API', () => {
       expect(res.text).not.toContain(OUTSIDE_SECRET);
     });
 
-    it('returns 404 for a symlink pointing outside the destination', async () => {
+    it('returns 404 for a symlink pointing outside the destination', async (ctx) => {
+      if (!symlinkSupported) ctx.skip();
       const res = await request.get('/api/operations/artifacts-success/artifacts/leak.tar');
       expect(res.status).toBe(404);
       expect(res.body.error).toBe('Artifact not found');
