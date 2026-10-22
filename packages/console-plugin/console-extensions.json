@@ -6,6 +6,11 @@
       "perspective": "admin",
       "name": "Image Mirroring",
       "insertAfter": "compute"
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
     }
   },
   {
@@ -16,6 +21,11 @@
       "section": "mirror-gui",
       "name": "Dashboard",
       "href": "/oc-mirror-ui"
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
     }
   },
   {
@@ -26,6 +36,11 @@
       "section": "mirror-gui",
       "name": "Configuration",
       "href": "/oc-mirror-ui/config"
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
     }
   },
   {
@@ -36,6 +51,11 @@
       "section": "mirror-gui",
       "name": "Operations",
       "href": "/oc-mirror-ui/operations"
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
     }
   },
   {
@@ -46,6 +66,11 @@
       "section": "mirror-gui",
       "name": "History",
       "href": "/oc-mirror-ui/history"
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
     }
   },
   {
@@ -56,26 +81,86 @@
       "section": "mirror-gui",
       "name": "Settings",
       "href": "/oc-mirror-ui/settings"
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
     }
   },
   {
     "type": "console.page/route",
-    "properties": { "path": "/oc-mirror-ui", "exact": true, "component": { "$codeRef": "pages.DashboardPage" } }
+    "properties": {
+      "path": "/oc-mirror-ui",
+      "exact": true,
+      "component": {
+        "$codeRef": "pages.DashboardPage"
+      }
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
+    }
   },
   {
     "type": "console.page/route",
-    "properties": { "path": "/oc-mirror-ui/config", "exact": true, "component": { "$codeRef": "pages.MirrorConfigPage" } }
+    "properties": {
+      "path": "/oc-mirror-ui/config",
+      "exact": true,
+      "component": {
+        "$codeRef": "pages.MirrorConfigPage"
+      }
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
+    }
   },
   {
     "type": "console.page/route",
-    "properties": { "path": "/oc-mirror-ui/operations", "exact": true, "component": { "$codeRef": "pages.MirrorOperationsPage" } }
+    "properties": {
+      "path": "/oc-mirror-ui/operations",
+      "exact": true,
+      "component": {
+        "$codeRef": "pages.MirrorOperationsPage"
+      }
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
+    }
   },
   {
     "type": "console.page/route",
-    "properties": { "path": "/oc-mirror-ui/history", "exact": true, "component": { "$codeRef": "pages.HistoryPage" } }
+    "properties": {
+      "path": "/oc-mirror-ui/history",
+      "exact": true,
+      "component": {
+        "$codeRef": "pages.HistoryPage"
+      }
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
+    }
   },
   {
     "type": "console.page/route",
-    "properties": { "path": "/oc-mirror-ui/settings", "exact": true, "component": { "$codeRef": "pages.SettingsPage" } }
+    "properties": {
+      "path": "/oc-mirror-ui/settings",
+      "exact": true,
+      "component": {
+        "$codeRef": "pages.SettingsPage"
+      }
+    },
+    "flags": {
+      "required": [
+        "CLUSTER_VERSION"
+      ]
+    }
   }
 ]

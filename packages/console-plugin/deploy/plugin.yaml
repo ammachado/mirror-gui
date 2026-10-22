@@ -1,11 +1,43 @@
 # Spike manifests for the console plugin. The backend comes from charts/mirror-gui
 # (release "mirror-gui" in namespace "mirror-gui", Service mirror-gui:3001).
+#
+# Access matches the console's "Administration > Cluster Settings" page: a user may use the
+# plugin when they can `get` the config.openshift.io ClusterVersion named "version" (the
+# console's CLUSTER_VERSION flag). The UI hides itself with that flag (console-extensions.json);
+# the API enforces it in the oauth-proxy sidecar, the only path to the backend.
+#
+# Before applying, create the oauth-proxy cookie secret once:
+#   oc -n mirror-gui create secret generic mirror-gui-plugin-cookie \
+#     --from-literal=secret="$(openssl rand -base64 32 | head -c 32)"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mirror-gui-plugin
+  namespace: mirror-gui
+---
+# Lets oauth-proxy validate the user's token (TokenReview) and check their access
+# (SubjectAccessReview). It grants no access to anything else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mirror-gui-plugin-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: mirror-gui-plugin
+    namespace: mirror-gui
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mirror-gui-plugin-nginx
   namespace: mirror-gui
 data:
+  # Serves the plugin bundle only. The console forwards any GET under /api/plugins/oc-mirror-ui/
+  # here, so nginx must not proxy anything to the backend.
   nginx.conf: |
     error_log /dev/stdout info;
     pid /tmp/nginx.pid;
@@ -26,26 +58,6 @@ data:
         ssl_certificate /var/cert/tls.crt;
         ssl_certificate_key /var/cert/tls.key;
         root /usr/share/nginx/html;
-
-        # The ConsolePlugin "backend" proxy alias lands here; the console strips its prefix.
-        # Resolve the backend per request, so the plugin starts even when the backend
-        # Service does not exist yet. nginx's resolver ignores search domains: use the FQDN.
-        resolver dns-default.openshift-dns.svc.cluster.local valid=30s;
-        set $backend http://mirror-gui.mirror-gui.svc.cluster.local:3001;
-
-        location /api/ {
-          proxy_pass $backend;
-          proxy_http_version 1.1;
-          proxy_set_header Connection "";
-          # Spike workaround: the backend's compression middleware holds SSE until the
-          # response ends when gzip is accepted (no res.flush()). Fix belongs in the server.
-          proxy_set_header Accept-Encoding "";
-          # Log streaming uses Server-Sent Events, which buffering would hold back.
-          proxy_buffering off;
-          proxy_cache off;
-          proxy_read_timeout 1h;
-          client_max_body_size 50m;
-        }
       }
     }
 ---
@@ -63,6 +75,9 @@ spec:
     - name: https
       port: 9443
       targetPort: 9443
+    - name: api
+      port: 8443
+      targetPort: 8443
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -79,6 +94,7 @@ spec:
       labels:
         app: mirror-gui-plugin
     spec:
+      serviceAccountName: mirror-gui-plugin
       containers:
         - name: nginx
           image: image-registry.openshift-image-registry.svc:5000/mirror-gui/mirror-gui-plugin:spike
@@ -100,13 +116,69 @@ spec:
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
+        - name: oauth-proxy
+          image: image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4
+          args:
+            - --provider=openshift
+            - --openshift-service-account=mirror-gui-plugin
+            - --https-address=:8443
+            - --http-address=
+            - --tls-cert=/var/cert/tls.crt
+            - --tls-key=/var/cert/tls.key
+            - --cookie-secret-file=/var/cookie/secret
+            - --upstream=http://mirror-gui.mirror-gui.svc.cluster.local:3001
+            - --email-domain=*
+            - --skip-provider-button
+            # Bearer tokens (forwarded by the console) and cookie sessions both need the same
+            # permission as Cluster Settings.
+            - '--openshift-delegate-urls={"/": {"group": "config.openshift.io", "resource": "clusterversions", "name": "version", "verb": "get"}}'
+            - '--openshift-sar={"group": "config.openshift.io", "resource": "clusterversions", "name": "version", "verb": "get"}'
+          ports:
+            - containerPort: 8443
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: cert
+              mountPath: /var/cert
+              readOnly: true
+            - name: cookie
+              mountPath: /var/cookie
+              readOnly: true
       volumes:
         - name: cert
           secret:
             secretName: mirror-gui-plugin-cert
+        - name: cookie
+          secret:
+            secretName: mirror-gui-plugin-cookie
         - name: nginx-conf
           configMap:
             name: mirror-gui-plugin-nginx
+---
+# The backend has no authentication of its own: only oauth-proxy may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mirror-gui-backend-from-plugin-only
+  namespace: mirror-gui
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mirror-gui
+      app.kubernetes.io/instance: mirror-gui
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mirror-gui-plugin
+      ports:
+        - port: 3001
 ---
 apiVersion: console.openshift.io/v1
 kind: ConsolePlugin
@@ -123,11 +195,11 @@ spec:
       basePath: /
   proxy:
     - alias: backend
-      # The backend does not check tokens, so do not forward the user's.
-      authorization: None
+      # oauth-proxy checks the user's own token, so the console must forward it.
+      authorization: UserToken
       endpoint:
         type: Service
         service:
           name: mirror-gui-plugin
           namespace: mirror-gui
-          port: 9443
+          port: 8443
