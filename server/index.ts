@@ -1770,7 +1770,7 @@ app.post('/api/operations/start', async (req: Request, res: Response) => {
       mirrorUrl,
     ];
 
-    const quoteArg = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
+    const quoteArg = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, '\'\\\'\'')}'`);
     logStream.write(`$ oc-mirror ${ocMirrorArgs.map(quoteArg).join(' ')}\n`);
 
     const child = spawn('oc-mirror', ocMirrorArgs, {
