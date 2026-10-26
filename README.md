@@ -90,6 +90,7 @@ Behind a corporate proxy, set the outbound proxy so `oc-mirror`, catalog sync, a
 
 ```bash
 helm upgrade --install mirror-gui charts/mirror-gui \
+  --namespace mirror-gui --reuse-values \
   --set proxy.httpProxy=http://proxy.example.com:3128 \
   --set proxy.httpsProxy=http://proxy.example.com:3128 \
   --set-string proxy.noProxy='.svc\,.cluster.local\,localhost\,127.0.0.1'
