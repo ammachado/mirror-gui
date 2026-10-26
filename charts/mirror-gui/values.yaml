@@ -1,3 +1,4 @@
+# Must stay 1: running operations are tracked in per-server memory (the chart fails above 1).
 replicaCount: 1
 
 image:
