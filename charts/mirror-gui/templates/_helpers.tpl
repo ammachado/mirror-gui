@@ -35,5 +35,5 @@ or a boolean, which toYaml would emit unquoted and the API server would reject.
 
 {{- define "mirror-gui.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "mirror-gui.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end }}
