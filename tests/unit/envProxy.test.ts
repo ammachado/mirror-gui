@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import http from 'http';
-import { AddressInfo } from 'net';
+import { AddressInfo, Socket } from 'net';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -19,6 +19,14 @@ describe('Node fetch honors NODE_USE_ENV_PROXY', () => {
       seen.push(req.url ?? '');
       res.end('via-proxy');
     });
+    // Node 22's fetch tunnels even plain-HTTP requests through CONNECT, while later versions
+    // send them in absolute form, so the proxy has to answer both. Without a 'connect'
+    // listener the server drops the tunnel and undici reconnects forever, hanging the child.
+    proxy.on('connect', (req, socket) => {
+      seen.push(req.url ?? '');
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      proxy.emit('connection', socket as Socket);
+    });
     await new Promise<void>(r => proxy.listen(0, '127.0.0.1', r));
     proxyPort = (proxy.address() as AddressInfo).port;
   });
@@ -36,7 +44,9 @@ describe('Node fetch honors NODE_USE_ENV_PROXY', () => {
   it('sends the request through the proxy when enabled', async () => {
     const out = await run({ NODE_USE_ENV_PROXY: '1', HTTP_PROXY: `http://127.0.0.1:${proxyPort}` });
     expect(out).toBe('via-proxy');
-    expect(seen).toContain('http://registry.invalid/v2/');
+    // Absolute form records the full URL; a tunnel records the CONNECT authority. Either way
+    // the proxy, not a direct connection, saw the target host.
+    expect(seen.some(url => url.includes('registry.invalid'))).toBe(true);
   });
 
   it('bypasses the proxy for hosts in NO_PROXY', async () => {
