@@ -162,7 +162,7 @@ create_directories() {
         "$DATA_DIR/run" \
     2>/dev/null || {
         print_status "Fixing data/ permissions for directory creation..."
-        chmod -R 777 "$DATA_DIR" 2>/dev/null || sudo chmod -R 777 "$DATA_DIR"
+        find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} + 2>/dev/null || sudo find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} +
         mkdir -p \
             "$DATA_DIR/configs" \
             "$DATA_DIR/operations" \
@@ -173,7 +173,8 @@ create_directories() {
             "$DATA_DIR/run"
     }
 
-    chmod -R 777 "$DATA_DIR" 2>/dev/null || sudo chmod -R 777 "$DATA_DIR" 2>/dev/null || true
+    # Skip the saved pull secret so it is never world-readable, even until the chmod 600 below.
+    find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} + 2>/dev/null || sudo find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} + 2>/dev/null || true
     # The server saves a pull secret entered in Settings here; keep it readable by its owner only.
     if [ -f "$DATA_DIR/pull-secret.json" ]; then
         chmod 600 "$DATA_DIR/pull-secret.json" 2>/dev/null || sudo chmod 600 "$DATA_DIR/pull-secret.json" 2>/dev/null || true

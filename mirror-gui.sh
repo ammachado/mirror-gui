@@ -148,6 +148,35 @@ resolve_image_tag() {
     echo "${IMAGE_NAME}:latest-${ARCH}"
 }
 
+# Rewrites a proxy URL whose host is exactly localhost or 127.0.0.1 to host.containers.internal.
+# Credentials, port, path and every other host are left untouched.
+rewrite_loopback_proxy_url() {
+    local url="$1"
+    local scheme="" rest authority path userinfo="" hostport host port
+
+    if [[ "$url" == *"://"* ]]; then
+        scheme="${url%%://*}://"
+        rest="${url#*://}"
+    else
+        rest="$url"
+    fi
+    authority="${rest%%/*}"
+    path="${rest:${#authority}}"
+    if [[ "$authority" == *"@"* ]]; then
+        userinfo="${authority%@*}@"
+        hostport="${authority##*@}"
+    else
+        hostport="$authority"
+    fi
+    host="${hostport%%:*}"
+    port="${hostport:${#host}}"
+
+    case "$host" in
+        localhost|127.0.0.1) host="host.containers.internal" ;;
+    esac
+    echo "${scheme}${userinfo}${host}${port}${path}"
+}
+
 ensure_available_web_port() {
     if ! port_is_in_use "$WEB_PORT"; then
         return 0
@@ -246,7 +275,7 @@ create_data_directories() {
         "$DATA_DIR/run" \
     2>/dev/null || {
         print_status "Fixing data/ permissions for directory creation..."
-        chmod -R 777 "$DATA_DIR" 2>/dev/null || sudo chmod -R 777 "$DATA_DIR"
+        find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} + 2>/dev/null || sudo find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} +
         mkdir -p \
             "$DATA_DIR/configs" \
             "$DATA_DIR/operations" \
@@ -257,7 +286,8 @@ create_data_directories() {
             "$DATA_DIR/run"
     }
 
-    chmod -R 777 "$DATA_DIR" 2>/dev/null || sudo chmod -R 777 "$DATA_DIR" 2>/dev/null || true
+    # Skip the saved pull secret so it is never world-readable, even until the chmod 600 below.
+    find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} + 2>/dev/null || sudo find "$DATA_DIR" ! -type l ! -path "$DATA_DIR/pull-secret.json" -exec chmod 777 {} + 2>/dev/null || true
     # The server saves a pull secret entered in Settings here; keep it readable by its owner only.
     if [ -f "$DATA_DIR/pull-secret.json" ]; then
         chmod 600 "$DATA_DIR/pull-secret.json" 2>/dev/null || sudo chmod 600 "$DATA_DIR/pull-secret.json" 2>/dev/null || true
@@ -335,8 +365,7 @@ run_container() {
                 # is host.containers.internal. Rewrite proxy URLs the way podman machine rewrites
                 # its own copy of these variables, so a local proxy (127.0.0.1:3128) stays reachable.
                 if [ "$host_os" = "Darwin" ] && [ "$proxy_var" != "NO_PROXY" ] && [ "$proxy_var" != "no_proxy" ]; then
-                    proxy_value="${proxy_value//127.0.0.1/host.containers.internal}"
-                    proxy_value="${proxy_value//localhost/host.containers.internal}"
+                    proxy_value="$(rewrite_loopback_proxy_url "$proxy_value")"
                 fi
                 proxy_args+=(-e "$proxy_var=$proxy_value")
             fi
