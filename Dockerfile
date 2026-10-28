@@ -280,6 +280,12 @@ RUN mkdir -p /app/data /app/cache && \
 
 ENV OC_MIRROR_CACHE_DIR=/app/cache
 
+# Node's fetch (registry verification) ignores HTTP(S)_PROXY and NO_PROXY unless this is set,
+# and it changes nothing when they are unset. Setting it in the image keeps fetch on the same
+# proxy as oc-mirror and oc however the container is started; podman passes host proxy
+# variables to every container by default.
+ENV NODE_USE_ENV_PROXY=1
+
 LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
