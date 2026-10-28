@@ -325,10 +325,20 @@ run_container() {
         # Forward the host's outbound proxy settings. NODE_USE_ENV_PROXY makes Node's fetch
         # honor them; oc-mirror and oc read them directly.
         local -a proxy_args=()
-        local proxy_var
+        local proxy_var proxy_value
+        local host_os
+        host_os="$(uname -s)"
         for proxy_var in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
             if [ -n "${!proxy_var:-}" ]; then
-                proxy_args+=(-e "$proxy_var=${!proxy_var}")
+                proxy_value="${!proxy_var}"
+                # On macOS the container runs in the podman machine VM, where the host's loopback
+                # is host.containers.internal. Rewrite proxy URLs the way podman machine rewrites
+                # its own copy of these variables, so a local proxy (127.0.0.1:3128) stays reachable.
+                if [ "$host_os" = "Darwin" ] && [ "$proxy_var" != "NO_PROXY" ] && [ "$proxy_var" != "no_proxy" ]; then
+                    proxy_value="${proxy_value//127.0.0.1/host.containers.internal}"
+                    proxy_value="${proxy_value//localhost/host.containers.internal}"
+                fi
+                proxy_args+=(-e "$proxy_var=$proxy_value")
             fi
         done
         if [ "${#proxy_args[@]}" -gt 0 ]; then
