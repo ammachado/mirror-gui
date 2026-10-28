@@ -84,9 +84,9 @@ helm upgrade --install mirror-gui charts/mirror-gui \
   --set pullSecret.existingSecret=mirror-gui-pull-secret
 ```
 
-Choose the PVC size and storage class for your cluster. Setting `persistence.enabled=false` makes all data ephemeral. The oc-mirror cache (`--cache-dir`) lives on a second PVC (`mirror-gui-cache` for the release above), mounted at `/app/cache` and configured with `cachePersistence.size`, `cachePersistence.storageClass`, and `cachePersistence.retain`. Setting `cachePersistence.enabled=false` replaces it with an `emptyDir`, so each pod restart starts with an empty cache. The chart disables its OpenShift Route by default. Setting `route.enabled=true` exposes an unauthenticated administrative interface that must be protected by cluster access controls.
+Choose the PVC size and storage class for your cluster. Setting `persistence.enabled=false` makes all data ephemeral. The oc-mirror cache (`--cache-dir`) lives on a second PVC (`mirror-gui-cache` for the release above), mounted at `/app/cache` and configured with `cachePersistence.size`, `cachePersistence.storageClass`, and `cachePersistence.retain`. Setting `cachePersistence.enabled=false` replaces it with an `emptyDir`, so each pod restart starts with an empty cache. The chart disables its OpenShift Route by default. Setting `route.enabled=true` exposes an unauthenticated administrative interface that must be protected by cluster access controls. The API is unauthenticated even without the Route: any pod that can reach the Service can read the pull secret through `/api/pull-secret/content` and start or delete operations, so restrict ingress to the pod with a NetworkPolicy.
 
-Behind a corporate proxy, set the outbound proxy so `oc-mirror`, catalog sync, and registry verification can reach the registries. `noProxy` is a comma-separated list; include your internal registry hosts and cluster ranges:
+Behind a corporate proxy, set the outbound proxy so `oc-mirror`, catalog sync, and registry verification can reach the registries. Set `httpsProxy`: registries use HTTPS, and `oc-mirror` and `oc` ignore `httpProxy` for them, while registry verification falls back to it. `noProxy` is a comma-separated list; include your internal registry hosts by name, domain suffix, or IP address. CIDR ranges apply to `oc-mirror` and `oc` but not to registry verification:
 
 ```bash
 helm upgrade --install mirror-gui charts/mirror-gui \
@@ -98,7 +98,7 @@ helm upgrade --install mirror-gui charts/mirror-gui \
 
 `mirror-gui.sh` forwards `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` (either case) from the host environment to the container when they are set. Proxy authentication goes in the proxy URL, so treat a value containing credentials as a secret. Custom CA bundles for TLS-intercepting proxies are not supported yet.
 
-`helm uninstall` deletes the PVC and everything mirrored into it. Set `persistence.retain=true` to keep the claim instead. A retained claim survives the release, so reinstalling under the same release name fails until you delete it:
+`helm uninstall` deletes both PVCs and everything in them. Set `persistence.retain=true` (and `cachePersistence.retain=true` for the cache) to keep a claim instead. Helm leaves a retained claim in place, and a later install under the same release name and namespace adopts it again, data included. Delete a retained claim you no longer need by hand:
 
 ```bash
 oc -n mirror-gui delete pvc mirror-gui
