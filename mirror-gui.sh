@@ -234,12 +234,16 @@ check_pull_secret() {
 create_data_directories() {
     print_status "Ensuring data directories exist..."
 
+    # catalog-data and run are created here, not by the container, so they stay writable when
+    # the container switches between UID 1001 and the keep-id host user (pull secret present).
     mkdir -p \
         "$DATA_DIR/configs" \
         "$DATA_DIR/operations" \
         "$DATA_DIR/logs" \
         "$DATA_DIR/cache" \
         "$DATA_DIR/mirrors/default" \
+        "$DATA_DIR/catalog-data" \
+        "$DATA_DIR/run" \
     2>/dev/null || {
         print_status "Fixing data/ permissions for directory creation..."
         chmod -R 777 "$DATA_DIR" 2>/dev/null || sudo chmod -R 777 "$DATA_DIR"
