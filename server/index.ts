@@ -1003,7 +1003,9 @@ app.post('/api/pull-secret', async (req: Request, res: Response) => {
       return;
     }
 
-    await fsp.writeFile(AUTHFILE_PATH, content, 'utf8');
+    // Owner-only on creation: the default path is in STORAGE_DIR, which the local launchers
+    // bind-mount from the host checkout.
+    await fsp.writeFile(AUTHFILE_PATH, content, { encoding: 'utf8', mode: 0o600 });
     pullSecretPath = AUTHFILE_PATH;
     pullSecretDetected = true;
     console.log(`Pull secret saved to: ${AUTHFILE_PATH}`);

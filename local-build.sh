@@ -164,10 +164,16 @@ create_directories() {
             "$DATA_DIR/operations" \
             "$DATA_DIR/logs" \
             "$DATA_DIR/cache" \
-            "$DATA_DIR/mirrors/default"
+            "$DATA_DIR/mirrors/default" \
+            "$DATA_DIR/catalog-data" \
+            "$DATA_DIR/run"
     }
 
     chmod -R 777 "$DATA_DIR" 2>/dev/null || sudo chmod -R 777 "$DATA_DIR" 2>/dev/null || true
+    # The server saves a pull secret entered in Settings here; keep it readable by its owner only.
+    if [ -f "$DATA_DIR/pull-secret.json" ]; then
+        chmod 600 "$DATA_DIR/pull-secret.json" 2>/dev/null || sudo chmod 600 "$DATA_DIR/pull-secret.json" 2>/dev/null || true
+    fi
     print_success "Data directories are ready"
 }
 
