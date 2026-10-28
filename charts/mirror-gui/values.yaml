@@ -66,3 +66,16 @@ proxy:
 route:
   enabled: false
   host: ""
+
+# The API is unauthenticated: any pod that reaches it can read the pull secret and start or
+# delete operations. This policy denies all ingress to the pod except from the OpenShift router
+# (only while the Route is enabled) and from the peers in ingressFrom. `oc port-forward` still
+# works. ingressFrom takes NetworkPolicy peers, for example:
+#   ingressFrom:
+#     - namespaceSelector:
+#         matchLabels:
+#           kubernetes.io/metadata.name: mirror-clients
+# Disable it only when another NetworkPolicy already restricts ingress to this namespace.
+networkPolicy:
+  enabled: true
+  ingressFrom: []

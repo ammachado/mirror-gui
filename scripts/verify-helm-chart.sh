@@ -88,6 +88,9 @@ assert_contains 'port: 3001'
 assert_contains 'kind: PersistentVolumeClaim'
 assert_absent 'kind: Route'
 assert_absent 'storageClassName:'
+# The API is unauthenticated, so ingress to the pod is denied unless explicitly allowed.
+assert_contains 'kind: NetworkPolicy'
+assert_contains 'ingress: []'
 
 helm template test "$chart_dir" --set persistence.storageClass=fast >"$render"
 assert_contains 'storageClassName: "fast"'
@@ -123,6 +126,10 @@ assert_route_contains 'insecureEdgeTerminationPolicy: Redirect'
 helm template test "$chart_dir" --set route.enabled=true >"$render"
 assert_route_contains 'kind: Route'
 assert_route_absent 'host:'
+assert_contains 'policy-group.network.openshift.io/ingress: ""'
+
+helm template test "$chart_dir" --set networkPolicy.enabled=false >"$render"
+assert_absent 'kind: NetworkPolicy'
 
 helm template test "$chart_dir" --set route.enabled=true --set labels.owner=platform --set annotations.owner=platform >"$render"
 assert_route_count 'owner: platform' 2
@@ -156,6 +163,7 @@ assert_data_volume_empty_dir
 assert_cache_volume 'emptyDir: {}'
 
 grep -Fq 'Route access is unauthenticated' "$chart_dir/templates/NOTES.txt"
+grep -Fq 'networkPolicy.ingressFrom' README.md
 grep -Fq 'oc create namespace mirror-gui' README.md
 grep -Fq 'oc -n mirror-gui create secret generic mirror-gui-pull-secret' README.md
 grep -Fq 'helm upgrade --install mirror-gui charts/mirror-gui' README.md
