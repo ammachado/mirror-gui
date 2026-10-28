@@ -17,7 +17,20 @@ which would make the whole manifest undecodable. Chart-owned values win.
       "app.kubernetes.io/name" (include "mirror-gui.name" .)
       "app.kubernetes.io/instance" .Release.Name
       "app.kubernetes.io/managed-by" .Release.Service -}}
-{{- toYaml (merge $owned (.Values.labels | default dict)) -}}
+{{- include "mirror-gui.stringMap" (merge $owned (.Values.labels | default dict)) -}}
+{{- end }}
+
+{{/*
+Renders a map with every value converted to a string. Label and annotation values must be
+strings, but `--set labels.tier=1` or `--set annotations.enabled=true` hands the chart a number
+or a boolean, which toYaml would emit unquoted and the API server would reject.
+*/}}
+{{- define "mirror-gui.stringMap" -}}
+{{- $strings := dict -}}
+{{- range $key, $value := . -}}
+{{- $_ := set $strings $key (toString $value) -}}
+{{- end -}}
+{{- toYaml $strings -}}
 {{- end }}
 
 {{- define "mirror-gui.selectorLabels" -}}

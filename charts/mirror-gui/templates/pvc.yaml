@@ -14,7 +14,7 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     {{- with .Values.annotations }}
-    {{- toYaml . | nindent 4 }}
+    {{- include "mirror-gui.stringMap" . | nindent 4 }}
     {{- end }}
   {{- end }}
 spec:
@@ -41,7 +41,7 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     {{- with .Values.annotations }}
-    {{- toYaml . | nindent 4 }}
+    {{- include "mirror-gui.stringMap" . | nindent 4 }}
     {{- end }}
   {{- end }}
 spec:
