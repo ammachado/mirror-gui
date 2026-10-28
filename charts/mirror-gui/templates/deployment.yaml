@@ -28,6 +28,10 @@ spec:
         {{- include "mirror-gui.stringMap" . | nindent 8 }}
       {{- end }}
     spec:
+      {{- /* restricted-v2 injects an fsGroup, and the default policy (Always) re-chowns every file
+             on both claims at each pod start. OnRootMismatch skips that once ownership is set. */}}
+      securityContext:
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: mirror-gui
           image: "{{ (.Values.image).repository }}:{{ (.Values.image).tag }}"
